@@ -49,13 +49,21 @@ to either for machine-readable output.
   file opens Monaco.
 - **Right** — the agent log. Click any tool call to expand its input and result.
 - **Bottom** — a real shell (`` Ctrl+` ``) rooted in the open session's repo.
+  This is where live sessions actually run.
 
 To start a live session: pick the target repo in the dropdown at the bottom
 right, type a prompt, hit **Run** (or `Cmd/Ctrl+Enter`).
 
-Descant does **not** pass `--dangerously-skip-permissions`. When Claude Code
-blocks a tool, you get an amber callout in the log saying what was blocked and
-why, and the session goes to "needs you".
+**Run opens `claude` in the terminal panel** — the real interactive CLI, not a
+headless subprocess. That means permission prompts appear in the terminal and
+you answer them there, normally. **Stop** sends Ctrl-C to that shell.
+
+The agent panel follows along by tailing the transcript Claude Code writes, so
+it shows the conversation as a readable log while the terminal shows the CLI
+itself. Because it reads transcripts rather than owning a process, it also picks
+up sessions you started yourself in any terminal — just point it at the repo.
+
+Descant never passes `--dangerously-skip-permissions`.
 
 ## Layout
 
@@ -64,7 +72,8 @@ backend/descant/     the brain — everything below is a thin client over it
   transcript.py      .jsonl parsing (format notes at the top of the file)
   inspector.py       context-cost analysis
   tokens.py          token estimation + the tool-schema size table
-  runner.py          spawns and supervises live `claude` processes
+  tailer.py          follows a live session by watching its transcript
+  runner.py          headless `claude -p` runner (kept for the HTTP API)
   server.py          FastAPI + WebSockets
   cli.py             the terminal inspector
 app/
@@ -81,7 +90,8 @@ sandbox-repo/        throwaway repo that live runs execute against
 
 | Variable | Default | What it does |
 |---|---|---|
-| `DESCANT_PROJECTS_DIR` | bundled fixtures (app) / `~/.claude/projects` (CLI) | Transcript source |
+| `DESCANT_PROJECTS_DIR` | fixtures **+** `~/.claude/projects` (app) / `~/.claude/projects` (CLI) | Transcript sources; accepts a `:`-separated list |
+| `DESCANT_LIVE_PROJECTS_DIR` | `~/.claude/projects` | Where the tailer looks for live sessions |
 | `DESCANT_CLAUDE_BIN` | `claude` | Which CLI to spawn |
 | `DESCANT_PORT` | `8787` | Backend port |
 | `DESCANT_NO_SPAWN` | unset | Don't start the backend; attach to a running one |

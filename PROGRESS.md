@@ -30,8 +30,71 @@ Items 1–7 are done. Every "verified" above means I drove the real app headless
 and looked at the result, not that the code compiles. Item 8 was left untouched
 rather than half-built.
 
-Beyond the list: **multi-turn conversations** (follow-up turns via `--resume`)
-and a **40-check test suite** (`cd backend && python3 -m tests.test_descant`).
+Beyond the list: **multi-turn conversations** (`--resume`), **Run-in-terminal**
+with transcript tailing, **~90-language editor support**, and a **42-check test
+suite** (`cd backend && python3 -m tests.test_descant`).
+
+---
+
+## Later change: Run happens in the terminal
+
+Run used to spawn a headless `claude -p` and stream its stdout. It now launches
+the **interactive** `claude` in the pty for the target repo, and the agent panel
+follows by **tailing the transcript** (`backend/descant/tailer.py`).
+
+This is a better design on three counts:
+
+1. **Permission prompts became answerable.** That was the biggest gap in the
+   old build — blocks were surfaced but you couldn't act on them. Now they
+   appear in the real CLI and you answer them there.
+2. **The panel survives Descant restarting**, because the transcript on disk is
+   the source of truth rather than a process we happen to own.
+3. **It picks up sessions started outside Descant.** Any `claude` you run in any
+   terminal shows up if you point the panel at that repo.
+
+Consequences worth knowing:
+
+- `DESCANT_PROJECTS_DIR` now accepts a `:`-separated **list**, and the app reads
+  fixtures *and* `~/.claude/projects` together — a terminal session writes to the
+  real location, so it has to watch both.
+- The tailer waits for a transcript touched *since it attached*; it deliberately
+  never falls back to the newest existing one, or it would present yesterday's
+  conversation as live. Until a session starts you see "waiting for a session to
+  start in the terminal…".
+- The old headless runner (`runner.py`, `POST /api/runs`, `WS /ws/runs/{id}`)
+  still works and is still tested; the UI just no longer uses it. Kept because
+  it is the right primitive for scripted/non-interactive use.
+
+**⚠️ Verified in pieces, not end-to-end, and here is exactly why.** In this
+sandbox, interactive `claude` demands an OAuth browser login — only headless
+`claude -p` works, because it uses the session's injected credentials. So I could
+not photograph the full "type a prompt → watch the terminal → watch the panel"
+loop. What *is* verified independently:
+
+- the pty runs a real shell and receives typed commands (`echo`/`pwd`/`ls`);
+- the composer builds and dispatches the right `claude` command line;
+- the tailer waits, attaches, and streams a **real** transcript live — confirmed
+  by running a genuine session against `sandbox-repo/` while the panel followed
+  it (that screenshot shows the prompt, injected-context chips, a `Read` tool
+  card and the final answer).
+
+On your machine, where `claude` is already logged in, the joins between those
+should just work — but I'm flagging it rather than claiming a test I didn't run.
+
+---
+
+## Language support
+
+Was a hand-written 30-entry extension map. Now the index is built from
+`monaco.languages.getLanguages()`, so **every language monaco-editor ships (~90)
+works**, and upgrading Monaco adds more for free. Longest-extension-first so
+`.d.ts` beats `.ts`; bare filenames like `Dockerfile` match; a few extras Claude
+Code touches constantly (`.jsonl`, `.tf`, `.toml`) are mapped explicitly. The
+detected language shows in the status bar.
+
+This is highlighting and bracket/indent behaviour, **not** language servers — no
+completion or go-to-definition. Monaco's TS/JS worker gives those two for free;
+everything else would need a real LSP bridge, which is a project of its own.
 
 ---
 
@@ -44,10 +107,10 @@ and a **40-check test suite** (`cd backend && python3 -m tests.test_descant`).
 | Assistant-side context rows | **Real.** Derived from measured output tokens. |
 | User messages / tool results / injected context rows | **Estimated** (chars-per-token), anchored to measured totals. |
 | Tool-schema token figures | **Estimated from a hand-written table** (`tokens.TOOL_SCHEMA_TOKENS`). The softest number in the app. |
-| Live streaming | **Real.** Spawns `claude -p --output-format stream-json` and parses its actual output. |
-| Permission handling | **Real.** Observed `system/permission_denied` in live runs, twice, and rendered it. |
+| Live streaming | **Real.** Tails the transcript an actual `claude` session writes. |
+| Permission handling | **Real**, and now answerable — it happens in the terminal. |
 | Terminal | **Real** `node-pty` shell. |
-| Editor / diff | **Real** Monaco; diffs reconstructed from actual edit events. |
+| Editor / diff | **Real** Monaco, ~90 languages; diffs reconstructed from actual edit events. |
 | `fixtures/projects/` | **Synthetic** (`fixtures/generate.py`), in the exact real format. |
 | `sandbox-repo/` | Real files, deliberately trivial — a safe target for live runs. |
 
@@ -205,11 +268,10 @@ spinner (`--spinner-duration`).
   won't appear in the session list until you hit that button.
 - **Center panel doesn't follow live runs.** Selecting a run updates the agent
   panel but leaves whatever tab was open in the center.
-- **Permission blocks are surfaced, not actionable.** You get the amber callout
-  explaining what was blocked; approving still means editing your Claude Code
-  settings or re-prompting. Interactive approval needs
-  `--input-format stream-json` and a permission-prompt tool, which is a real
-  chunk of work, not a polish item.
+- **The full terminal-run loop is unverified in this sandbox** (OAuth — see
+  above). Its parts are verified separately.
+- **First run of `claude` shows onboarding** (theme picker). If Run seems to do
+  nothing, look at the terminal — it's waiting on you there.
 - **The explorer is a flat file list**, not a tree. Fine for small repos, poor
   for large ones.
 - **Editor is read-write but there is no save.** Edits in Monaco are not
