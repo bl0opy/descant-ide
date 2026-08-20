@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval' blob:; worker-src 'self' blob:; child-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*"
+    />
+    <title>Descant</title>
+    <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  </head>
+  <body>
+    <div id="shell">
+      <div id="titlebar">
+        <span class="brand">Descant</span>
+        <span id="titlebar-context"></span>
+        <span class="spacer"></span>
+        <span id="titlebar-source"></span>
+      </div>
+
+      <div id="body">
+        <nav id="activity-bar"></nav>
+
+        <aside id="sidebar">
+          <div class="sidebar-header">
+            <span id="sidebar-title">Sessions</span>
+            <span class="spacer"></span>
+            <button id="btn-refresh" title="Reload transcripts">Reload</button>
+          </div>
+          <div class="sidebar-scroll" id="sidebar-scroll"></div>
+          <div class="legend">
+            <span><i class="dot running"></i> running</span>
+            <span><i class="dot idle"></i> idle</span>
+            <span><i class="dot needs_input"></i> needs you</span>
+            <span><i class="dot failed"></i> failed</span>
+          </div>
+        </aside>
+
+        <main id="center">
+          <div id="tabs"></div>
+          <div id="editor-area">
+            <div class="view active" id="view-welcome">
+              <div class="empty-state">
+                <h2>No session open</h2>
+                <p>
+                  Pick a session from the sidebar to read its transcript and see where its
+                  context window went — or start a live run against a repo from the agent
+                  panel on the right.
+                </p>
+                <p>
+                  Toggle the terminal with <kbd>Ctrl</kbd>+<kbd>`</kbd>.
+                </p>
+              </div>
+            </div>
+            <div class="view" id="view-inspector"></div>
+            <div class="view" id="view-editor"><div id="monaco-host"></div></div>
+          </div>
+
+          <div id="panel" class="hidden">
+            <div class="panel-header">
+              <span>Terminal</span>
+              <span id="panel-cwd" class="spacer"></span>
+              <button id="btn-panel-close">Close</button>
+            </div>
+            <div id="terminal-host"></div>
+          </div>
+        </main>
+
+        <aside id="agent-panel">
+          <div class="agent-header">
+            <i class="dot idle" id="agent-dot"></i>
+            <span class="title" id="agent-title">Agent</span>
+            <span class="meta" id="agent-meta"></span>
+          </div>
+          <div id="agent-log"></div>
+          <div class="composer">
+            <textarea
+              id="composer-input"
+              rows="2"
+              placeholder="Ask Claude Code to do something in this repo…"
+            ></textarea>
+            <div class="composer-row">
+              <span class="hint" id="composer-hint"></span>
+              <button class="btn secondary" id="btn-stop" style="display: none">Stop</button>
+              <button class="btn" id="btn-send">Run</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <div id="statusbar">
+        <span class="item" id="status-backend">connecting…</span>
+        <span class="item" id="status-sessions"></span>
+        <span class="spacer"></span>
+        <span class="item" id="status-context"></span>
+        <span class="item" id="status-runs"></span>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+
+    <!-- Load order matters: the xterm UMD bundles must attach to window BEFORE
+         Monaco's AMD loader defines `define.amd`, or they register as anonymous
+         AMD modules and never reach the global scope. -->
+    <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+    <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+    <script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
+
+    <script src="icons.js"></script>
+    <script src="views.js"></script>
+    <script src="term.js"></script>
+    <script src="editor.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

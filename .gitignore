@@ -4,3 +4,5 @@ node_modules/
 .descant/
 dist/
 .DS_Store
+app/node_modules/
+*.png

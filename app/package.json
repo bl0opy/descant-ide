@@ -1,0 +1,20 @@
+{
+  "name": "descant",
+  "version": "0.1.0",
+  "description": "A desktop IDE built around Claude Code",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:nobackend": "DESCANT_NO_SPAWN=1 electron ."
+  },
+  "devDependencies": {
+    "electron": "^32.2.0"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "monaco-editor": "^0.52.0",
+    "node-pty": "^1.0.0"
+  }
+}

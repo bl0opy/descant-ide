@@ -1,0 +1,117 @@
+/* ==========================================================================
+   Descant theme tokens — THE ONLY FILE WITH LITERAL COLOURS OR SIZES IN IT.
+   --------------------------------------------------------------------------
+   Restyling the app means editing this file and nothing else.  app.css
+   references these variables exclusively; if you find a hex code or a pixel
+   value anywhere else, that is a bug.
+
+   Current pass: neutral dark, VS Code "Dark Modern" lineage.  Greys carry the
+   UI; one accent blue marks selection and active state, used sparingly.
+   ========================================================================== */
+
+:root {
+  /* --- surfaces, back to front ------------------------------------------ */
+  --bg-app: #1f1f1f; /* editor / main canvas */
+  --bg-sidebar: #181818; /* explorer, agent panel */
+  --bg-activity: #181818; /* far-left icon rail */
+  --bg-titlebar: #181818;
+  --bg-panel: #181818; /* bottom terminal panel */
+  --bg-tabs: #181818;
+  --bg-tab-active: #1f1f1f;
+  --bg-input: #313131;
+  --bg-hover: #2a2d2e;
+  --bg-selected: #04395e; /* VS Code's list.activeSelectionBackground */
+  --bg-raised: #252526; /* popovers, cards inside sidebars */
+  --bg-code: #1a1a1a; /* tool output blocks */
+
+  /* --- borders ---------------------------------------------------------- */
+  --border: #2b2b2b;
+  --border-strong: #3c3c3c;
+  --border-focus: var(--accent);
+
+  /* --- text ------------------------------------------------------------- */
+  --fg: #cccccc;
+  --fg-strong: #e7e7e7;
+  --fg-muted: #9d9d9d;
+  --fg-faint: #6e6e6e;
+  --fg-inverse: #ffffff;
+
+  /* --- accent (used sparingly: selection, focus, active tab underline) --- */
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-dim: #1e3a5f;
+
+  /* --- status ----------------------------------------------------------- */
+  --status-running: #4ade80; /* green  — agent is working */
+  --status-idle: #6e6e6e; /* grey   — nothing in flight */
+  --status-needs-input: #fbbf24; /* amber  — waiting on you */
+  --status-failed: #f87171; /* red    — process died */
+
+  /* --- semantic ---------------------------------------------------------- */
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --success: #4ade80;
+  --info: var(--accent);
+
+  /* --- context-cost bar segments (inspector) ---------------------------- */
+  --cost-system: #a78bfa;
+  --cost-tools: #fbbf24;
+  --cost-conversation: #38bdf8;
+  --cost-track: #2b2b2b;
+
+  /* --- typography -------------------------------------------------------- */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Ubuntu", "Droid Sans",
+    system-ui, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+
+  --leading-tight: 1.35;
+  --leading-normal: 1.55;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-bold: 600;
+
+  /* --- spacing scale ----------------------------------------------------- */
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 24px;
+  --space-8: 32px;
+
+  /* --- radii + shadow ----------------------------------------------------- */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+  --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.5);
+
+  /* --- layout metrics ----------------------------------------------------- */
+  --activity-bar-width: 48px;
+  --sidebar-width: 300px;
+  --agent-panel-width: 420px;
+  --titlebar-height: 35px;
+  --tab-height: 35px;
+  --statusbar-height: 22px;
+  --panel-height: 240px;
+  --row-height: 22px;
+
+  /* --- motion -------------------------------------------------------------
+     Deliberately minimal: distinct readable states, no bespoke animation. */
+  --transition-fast: 80ms ease;
+  --spinner-duration: 900ms;
+
+  /* --- scrollbars ---------------------------------------------------------- */
+  --scrollbar-size: 10px;
+  --scrollbar-thumb: #4a4a4a;
+  --scrollbar-thumb-hover: #5c5c5c;
+}
