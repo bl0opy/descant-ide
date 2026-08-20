@@ -55,13 +55,36 @@ def _parse_ts(raw: Any) -> datetime | None:
 def decode_project_dir(name: str) -> str:
     """Best-effort reverse of Claude Code's path encoding.
 
-    ``-home-user-descant-ide`` -> ``/home/user/descant-ide``.  Lossy: a repo
-    whose name legitimately contains ``-`` cannot be distinguished from a path
-    separator.  Only used when no transcript line carries ``cwd``.
+    The encoding replaces ``/`` with ``-``, which is ambiguous: given
+    ``-home-user-descant-ide`` there is no way to know from the string alone
+    whether the repo is ``descant-ide`` or ``descant/ide``.
+
+    So we disambiguate against the filesystem where we can, walking the segments
+    and greedily preferring the longest joining that actually exists on disk.
+    That resolves the common case exactly.  When nothing matches -- history from
+    another machine -- we fall back to the naive all-slashes reading.
+
+    Only reached when no transcript line carries ``cwd``; that field is exact
+    and always preferred.
     """
     if not name.startswith("-"):
         return name
-    return "/" + name[1:].replace("-", "/")
+    segments = name[1:].split("-")
+    naive = "/" + "/".join(segments)
+
+    resolved = Path("/")
+    i = 0
+    while i < len(segments):
+        # Longest first, so `descant-ide` beats `descant`.
+        for j in range(len(segments), i, -1):
+            candidate = resolved / "-".join(segments[i:j])
+            if candidate.exists():
+                resolved = candidate
+                i = j
+                break
+        else:
+            return naive  # this segment matches nothing; stop guessing
+    return str(resolved)
 
 
 @dataclass
