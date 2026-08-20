@@ -250,9 +250,7 @@
         status: 'idle',
       });
       renderLog($('agent-log'), data.events);
-      $('composer-hint').textContent = `resumes ${data.session_id.slice(0, 8)} in ${
-        data.repo_name
-      }`;
+      renderTargets();
       $('titlebar-context').textContent = `${data.repo_name} — ${data.git_branch || 'no branch'}`;
       $('status-context').textContent = `context ${fmtTokens(
         data.context.total_tokens
@@ -282,7 +280,7 @@
       meta: run?.repo_name || '',
       status: run?.status || 'running',
     });
-    $('composer-hint').textContent = run ? `live in ${run.repo_name}` : '';
+    renderTargets();
     if (run) {
       $('titlebar-context').textContent = `${run.repo_name} — live`;
       $('panel-cwd').textContent = run.cwd;
@@ -344,9 +342,9 @@
       toast('type something for Claude to do first');
       return;
     }
-    const cwd = currentRepoPath();
+    const cwd = $('composer-target').value || currentRepoPath();
     if (!cwd) {
-      toast('pick a session first so Descant knows which repo to run in', true);
+      toast('no runnable repo — none of these transcripts point at a path on this machine', true);
       return;
     }
     $('btn-send').disabled = true;
@@ -367,16 +365,65 @@
     }
   }
 
-  function currentRepoPath() {
+  /** The repo the selected thing belongs to — whether or not it exists here. */
+  function selectedRepo() {
     if (S.selected?.type === 'run') {
-      return S.live.find((r) => r.run_id === S.selected.id)?.cwd;
+      const r = S.live.find((x) => x.run_id === S.selected.id);
+      return r ? { repo_path: r.cwd, repo_name: r.repo_name, exists: true } : null;
     }
     if (S.selected?.type === 'session') {
-      for (const repo of S.repos) {
-        if (repo.sessions.some((s) => s.session_id === S.selected.id)) return repo.repo_path;
-      }
+      return (
+        S.repos.find((repo) =>
+          repo.sessions.some((s) => s.session_id === S.selected.id)
+        ) || null
+      );
     }
+    return null;
+  }
+
+  /** Where file/terminal views point: only ever a path that exists. */
+  function currentRepoPath() {
+    const repo = selectedRepo();
+    if (repo && repo.exists !== false) return repo.repo_path;
     return S.config?.sandboxRepo;
+  }
+
+  /** Populate the run-target picker with repos that actually exist here. */
+  function renderTargets() {
+    const sel = $('composer-target');
+    const previous = sel.value;
+    const opts = S.repos
+      .filter((r) => r.exists)
+      .map((r) => ({ value: r.repo_path, label: r.repo_name }));
+    if (S.config?.sandboxRepo && !opts.some((o) => o.value === S.config.sandboxRepo)) {
+      opts.push({ value: S.config.sandboxRepo, label: 'sandbox-repo (scratch)' });
+    }
+    sel.innerHTML = opts
+      .map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`)
+      .join('');
+
+    const repo = selectedRepo();
+    if (repo?.exists && opts.some((o) => o.value === repo.repo_path)) {
+      sel.value = repo.repo_path;
+    } else if (previous && opts.some((o) => o.value === previous)) {
+      sel.value = previous;
+    }
+    updateComposerHint();
+  }
+
+  function updateComposerHint() {
+    const repo = selectedRepo();
+    const target = $('composer-target').value;
+    const hint = $('composer-hint');
+    if (repo && repo.exists === false) {
+      hint.textContent = `${repo.repo_name} isn't on this machine — running in ${target
+        .split('/')
+        .pop()}`;
+      hint.style.color = 'var(--warning)';
+    } else {
+      hint.textContent = `runs in ${target || '—'}`;
+      hint.style.color = '';
+    }
   }
 
   async function stopRun() {
@@ -523,6 +570,7 @@
       $('titlebar-source').textContent = data.projects_dir;
       if (S.activeView === 'sessions') renderSidebar();
       renderActivityBar();
+      renderTargets();
       refreshStatusbar();
     } catch (err) {
       $('status-backend').textContent = `backend down — ${err.message}`;
@@ -562,6 +610,7 @@
     $('btn-send').addEventListener('click', startRun);
     $('btn-stop').addEventListener('click', stopRun);
     $('btn-panel-close').addEventListener('click', () => togglePanel(false));
+    $('composer-target').addEventListener('change', updateComposerHint);
 
     $('composer-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {

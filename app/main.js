@@ -125,6 +125,34 @@ function createWindow() {
   if (process.env.DESCANT_SCREENSHOT) {
     const delay = parseInt(process.env.DESCANT_SCREENSHOT_DELAY || '4000', 10);
     win.webContents.once('did-finish-load', () => {
+      // Two ways to exercise a flow before the grab, so a headless check can
+      // photograph more than the boot screen:
+      //   DESCANT_AUTOCLICK=<css selector>   click one element
+      //   DESCANT_DRIVE=<path to .js>        run an expression in the renderer
+      const runIn = (js, tag, at) =>
+        setTimeout(() => {
+          win.webContents
+            .executeJavaScript(js)
+            .then((r) => process.stdout.write(`[${tag}] ${r}\n`))
+            .catch((e) => process.stdout.write(`[${tag}] error: ${e}\n`));
+        }, at);
+
+      if (process.env.DESCANT_AUTOCLICK) {
+        runIn(
+          `(()=>{const e=document.querySelector(${JSON.stringify(
+            process.env.DESCANT_AUTOCLICK
+          )});if(e){e.click();return 'clicked'}return 'not found'})()`,
+          'autoclick',
+          Math.max(500, delay - 2500)
+        );
+      }
+      if (process.env.DESCANT_DRIVE) {
+        runIn(
+          fs.readFileSync(process.env.DESCANT_DRIVE, 'utf8'),
+          'drive',
+          parseInt(process.env.DESCANT_DRIVE_DELAY || '3000', 10)
+        );
+      }
       setTimeout(async () => {
         try {
           const img = await win.webContents.capturePage();

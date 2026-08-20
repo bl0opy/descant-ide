@@ -107,7 +107,16 @@ def list_sessions() -> dict:
         s = r.session
         bucket = repos.setdefault(
             s.repo_path,
-            {"repo_path": s.repo_path, "repo_name": s.repo_name, "sessions": [], "total_tokens": 0},
+            {
+                "repo_path": s.repo_path,
+                "repo_name": s.repo_name,
+                # Transcripts routinely refer to repos that are not on *this*
+                # machine (a fixture, or history synced from another laptop).
+                # The UI needs to know before offering to run a live session there.
+                "exists": Path(s.repo_path).is_dir(),
+                "sessions": [],
+                "total_tokens": 0,
+            },
         )
         bucket["sessions"].append(r.to_dict())
         bucket["total_tokens"] += r.total_tokens

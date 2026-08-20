@@ -785,6 +785,21 @@ textarea:focus {
   gap: var(--space-4);
 }
 
+.composer-row select {
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  max-width: 40%;
+  outline: none;
+}
+
+.composer-row select:focus {
+  border-color: var(--border-focus);
+}
+
 .composer-row .hint {
   flex: 1;
   font-size: var(--text-xs);
