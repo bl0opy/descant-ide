@@ -212,6 +212,29 @@ def analyze(session: Session) -> ContextReport:
             elif ev.kind == "tool_result":
                 tc.result_tokens += cost
 
+    # --- replace estimates with measured numbers where they exist -----------
+    # Everything the assistant produced was billed as output, and those totals
+    # are exact.  Thinking is the big one: transcripts store a redacted stub, so
+    # estimating it from characters undercounts badly on a long session (it cost
+    # ~20% of drift on a real 250k-token transcript).  The rest of the output --
+    # reply text and tool-call inputs -- is apportioned across those two buckets
+    # by their character ratio, since only their sum is known exactly.
+    if measured.available and measured.output_tokens:
+        buckets["thinking"] = measured.thinking_tokens
+        non_thinking = max(0, measured.output_tokens - measured.thinking_tokens)
+        est_pair = buckets["assistant_text"] + buckets["tool_calls"]
+        if est_pair > 0 and non_thinking > 0:
+            share = non_thinking / est_pair
+            buckets["assistant_text"] = round(buckets["assistant_text"] * share)
+            buckets["tool_calls"] = round(buckets["tool_calls"] * share)
+            for tc in per_tool.values():
+                tc.input_tokens = round(tc.input_tokens * share)
+        report.notes.append(
+            "Assistant-side rows (replies, thinking, tool call inputs) use the "
+            "transcript's measured output tokens; user messages, tool results and "
+            "injected context are estimated."
+        )
+
     report.conversation_breakdown = buckets
     report.conversation_tokens = sum(buckets.values())
     report.tool_costs = sorted(per_tool.values(), key=lambda t: t.total, reverse=True)
