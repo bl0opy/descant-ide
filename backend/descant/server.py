@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from . import config, events
+from . import config, events, library, loadout, mcp, mining
 from .inspector import analyze
 from .runner import MANAGER
 from .tailer import newest_transcript, tail_session
@@ -330,6 +330,94 @@ async def ws_replay(ws: WebSocket, session_id: str, delay: float = 0.0) -> None:
         await ws.send_json(events.make("status", subtype="closed", text="replay complete"))
     except (WebSocketDisconnect, RuntimeError):
         pass
+
+
+# --------------------------------------------------------------------------
+# loadout, conversion, mining, library
+# --------------------------------------------------------------------------
+
+
+@app.get("/api/loadout")
+async def get_loadout(repo: str, probe: bool = True) -> dict:
+    """What is attached to a repo and what each item costs."""
+    try:
+        return await loadout.get(repo, probe=probe)
+    except OSError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class ToggleBody(BaseModel):
+    repo: str
+    name: str
+    enabled: bool
+
+
+@app.post("/api/loadout/mcp")
+def toggle_mcp(body: ToggleBody) -> dict:
+    return loadout.set_mcp_enabled(body.repo, body.name, body.enabled)
+
+
+@app.post("/api/loadout/skill")
+def toggle_skill(body: ToggleBody) -> dict:
+    return loadout.set_skill_enabled(body.repo, body.name, body.enabled)
+
+
+class ConvertBody(BaseModel):
+    repo: str
+    name: str
+    disable_after: bool = True
+
+
+@app.post("/api/mcp/preview")
+async def preview_conversion(body: ConvertBody) -> dict:
+    """Show the generated skill and its saving before writing anything."""
+    servers = await mcp.discover_and_probe(body.repo, do_probe=True)
+    server = next((s for s in servers if s.name == body.name), None)
+    if server is None:
+        raise HTTPException(404, f"no MCP server named {body.name!r}")
+    return {
+        "server": server.to_dict(),
+        "skill": mcp.render_skill(server),
+        **mcp.conversion_savings(server),
+    }
+
+
+@app.post("/api/mcp/convert")
+async def convert(body: ConvertBody) -> dict:
+    try:
+        return await loadout.convert_mcp_to_skill(
+            body.repo, body.name, disable_after=body.disable_after
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/mining")
+def get_mining(repo: str | None = None, limit: int = 20) -> dict:
+    """Repeated tool sequences worth turning into skills."""
+    return mining.summary(CACHE.all(), repo_path=repo, limit=limit)
+
+
+class AcceptBody(BaseModel):
+    repo: str
+    slug: str
+    skill_md: str
+
+
+@app.post("/api/mining/accept")
+def accept_mined(body: AcceptBody) -> dict:
+    return loadout.write_mined_skill(body.repo, body.slug, body.skill_md)
+
+
+@app.get("/api/library")
+async def get_library(q: str = "", limit: int = 20, probe: bool = True) -> dict:
+    """Search every skill and MCP tool across all known repos."""
+    repos = sorted({s.repo_path for s in CACHE.all() if Path(s.repo_path).is_dir()})
+    lib = await library.build(repos, probe_mcp=probe)
+    entries = (
+        lib.score_query(q, limit=limit) if q else [e.to_dict() for e in lib.entries][:limit]
+    )
+    return {"query": q, "repos": repos, "stats": library.stats(lib), "results": entries}
 
 
 def main() -> None:
