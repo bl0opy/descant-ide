@@ -632,7 +632,71 @@ def make_harbor_migration() -> Builder:
     return b
 
 
+def make_harbor_verify(n: int):
+    """Sessions that all run the same verify loop — the miner's target case.
+
+    Real workflows show up as the *same* sequence in *different* sessions, which
+    is what separates a habit from a retry loop. Three sessions doing
+    test -> lint -> diff is exactly the signal skill mining exists to find.
+    """
+    files = ["limiter", "audit", "retry"]
+    prompts = [
+        "The rate limiter drops the first request after a restart. Fix it.",
+        "Timestamps in the audit log are off by an hour in BST. Fix and verify.",
+        "Retries aren't backing off — they hammer the upstream. Fix it.",
+    ]
+
+    def build() -> Builder:
+        b = Builder(
+            "/Users/ayan/code/harbor",
+            f"fix/verify-{n}",
+            datetime(2026, 8, 15 + n, 10 + n, 15, tzinfo=timezone.utc),
+        )
+        b.user(prompts[n])
+        b.attachment("system_reminder", SYS_REMINDER)
+        b.begin_request()
+        b.say("Let me look at the code path before changing anything.")
+        b.tool("Read", {"file_path": f"/Users/ayan/code/harbor/src/{files[n]}.ts"}, FILE_BLOB)
+        b.tool(
+            "Edit",
+            {
+                "file_path": f"/Users/ayan/code/harbor/src/{files[n]}.ts",
+                "old_string": "const now = Date.now()",
+                "new_string": "const now = clock.now()",
+            },
+            "The file has been updated.",
+        )
+        b.begin_request()
+        # The verify loop: the same three commands, in the same order, every time.
+        b.tool(
+            "Bash",
+            {"command": "npx vitest run --reporter=basic", "description": "Run tests"},
+            TEST_OUTPUT.replace("1 failed | 2 passed (3)", "3 passed (3)")
+            .replace("1 failed | 25 passed (26)", "26 passed (26)")
+            .replace("   \u00d7 rejects oversize payloads\n     \u2192 expected 413 but got 202\n", "")
+            .replace("\u276f src/ingest.test.ts (6 tests | 1 failed)", "\u2713 src/ingest.test.ts (6 tests)"),
+        )
+        b.tool(
+            "Bash",
+            {"command": "npx eslint src --max-warnings 0", "description": "Lint"},
+            "" if n != 1 else "src/audit.ts:44:7  warning  prefer-const\n\n1 problem",
+        )
+        b.tool(
+            "Bash",
+            {"command": "git diff --stat", "description": "Review the change"},
+            f" src/{files[n]}.ts | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)",
+        )
+        b.begin_request()
+        b.say("Tests pass, lint is clean, and the diff is the two lines I intended.")
+        return b
+
+    return build
+
+
 BUILDERS = [
+    make_harbor_verify(0),
+    make_harbor_verify(1),
+    make_harbor_verify(2),
     make_harbor_migration,
     make_harbor_auth,
     make_harbor_flaky,
