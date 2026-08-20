@@ -189,13 +189,18 @@
     if (tab.view === 'inspector') {
       $('view-inspector').classList.add('active');
       renderInspector($('view-inspector'), tab.payload);
-    } else if (tab.view === 'editor') {
+    } else if (tab.view === 'editor' || tab.view === 'diff') {
       $('view-editor').classList.add('active');
       window.Editor.layout();
-      if (tab.payload && window.Editor.current() !== tab.payload.path) {
-        window.Editor.openFile(tab.payload.path, tab.payload.text).catch((e) =>
-          toast(`editor: ${e.message}`, true)
-        );
+      // Monaco hosts one editor at a time, so re-open when the tab changes what
+      // should be showing.
+      const wanted = tab.view === 'diff' ? `diff:${tab.payload.path}` : tab.payload.path;
+      if (window.Editor.current() !== wanted) {
+        const p =
+          tab.view === 'diff'
+            ? window.Editor.openDiff(tab.payload.path, tab.payload.before, tab.payload.after)
+            : window.Editor.openFile(tab.payload.path, tab.payload.text);
+        p.catch((e) => toast(`editor: ${e.message}`, true));
       }
     }
   }
@@ -220,7 +225,7 @@
   function appendEvent(ev) {
     const host = $('agent-log');
     const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 120;
-    const el = renderEvent(ev, { container: host });
+    const el = renderEvent(ev, { container: host, onDiff: openDiff });
     if (el) host.appendChild(el);
     if (nearBottom) host.scrollTop = host.scrollHeight;
   }
@@ -249,7 +254,7 @@
         meta: `${data.message_count} msgs · ${fmtTokens(data.context.total_tokens)}`,
         status: 'idle',
       });
-      renderLog($('agent-log'), data.events);
+      renderLog($('agent-log'), data.events, { onDiff: openDiff });
       renderTargets();
       $('titlebar-context').textContent = `${data.repo_name} — ${data.git_branch || 'no branch'}`;
       $('status-context').textContent = `context ${fmtTokens(
@@ -471,6 +476,57 @@
     }
   }
 
+  /**
+   * Show what an agent edit changed.
+   *
+   * The transcript records the edit, not the file's before/after state, so we
+   * reconstruct: read the file as it stands now and apply the edit backwards.
+   * If the file is gone (a transcript from another machine), fall back to
+   * diffing the edit's own old_string against new_string, which still shows the
+   * change itself, just without surrounding context.
+   */
+  async function openDiff(ev) {
+    const input = ev.tool_input || {};
+    const path = input.file_path || input.path;
+    if (!path) {
+      toast('that edit has no file path to diff');
+      return;
+    }
+    const label = path.split('/').pop();
+    let after = null;
+    try {
+      const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
+      if (!data.binary) after = data.text;
+    } catch {
+      /* file not on this machine — handled below */
+    }
+
+    let before;
+    if (ev.tool_name === 'Write') {
+      before = after !== null && after !== input.content ? after : '';
+      after = input.content ?? '';
+    } else if (after !== null && input.old_string && after.includes(input.new_string ?? '')) {
+      // Un-apply the edit to reconstruct the previous file contents.
+      before = after.replace(input.new_string, input.old_string);
+    } else {
+      before = input.old_string ?? '';
+      after = input.new_string ?? after ?? '';
+      toast(`${label} isn't on this machine — showing the edit without context`);
+    }
+
+    openTab({
+      key: `diff:${ev.tool_use_id || path}`,
+      label: `${label} (diff)`,
+      view: 'diff',
+      payload: { path, before, after },
+    });
+    try {
+      await window.Editor.openDiff(path, before, after);
+    } catch (err) {
+      toast(`diff failed: ${err.message}`, true);
+    }
+  }
+
   async function openFile(path, label) {
     try {
       const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
@@ -628,6 +684,11 @@
         e.preventDefault();
         closeTab(S.activeTab);
       }
+    });
+
+    window.descant.onBackendExternal((url) => {
+      $('status-backend').textContent = `backend up (external ${url})`;
+      $('status-backend').className = 'item';
     });
 
     window.descant.onBackendDown((log) => {

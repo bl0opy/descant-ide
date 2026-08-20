@@ -121,7 +121,8 @@ window.Editor = (() => {
   async function openDiff(path, before, after) {
     await load();
     disposeAll();
-    currentPath = path;
+    // Namespaced so a file tab and a diff tab for the same path are distinct.
+    currentPath = `diff:${path}`;
     const lang = langFor(path);
     diffEditor = monaco.editor.createDiffEditor(host, {
       theme: 'descant',

@@ -61,9 +61,17 @@ function startBackend() {
   });
   backend.stdout.on('data', (d) => logBackend(d.toString().trimEnd()));
   backend.stderr.on('data', (d) => logBackend(d.toString().trimEnd()));
-  backend.on('exit', (code) => {
+  backend.on('exit', async (code) => {
     logBackend(`exited with code ${code}`);
     backend = null;
+    // A common case: the port was already taken by a backend someone started by
+    // hand, so ours exited immediately.  The app is fine — it is talking to that
+    // one — so say that rather than crying wolf.
+    if (await ping()) {
+      logBackend(`a backend is already serving ${API}; using it`);
+      if (win && !win.isDestroyed()) win.webContents.send('backend:external', API);
+      return;
+    }
     if (win && !win.isDestroyed()) win.webContents.send('backend:down', backendLog.slice(-20));
   });
 }

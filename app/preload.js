@@ -18,4 +18,5 @@ contextBridge.exposeInMainWorld('descant', {
   },
 
   onBackendDown: (cb) => ipcRenderer.on('backend:down', (_e, log) => cb(log)),
+  onBackendExternal: (cb) => ipcRenderer.on('backend:external', (_e, api) => cb(api)),
 });
