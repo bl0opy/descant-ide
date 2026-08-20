@@ -24,15 +24,17 @@ and shows 7 sessions across 3 repos.
 | 5 | Terminal (`node-pty` + `xterm.js`) | ✅ verified — real shell, real output |
 | 6 | Monaco editor + diff | ✅ verified — diff opens from agent edits |
 | 7 | Multiple concurrent sessions | ✅ verified — 3 simultaneous runs, correct routing |
-| 8 | MCP → skill converter | ⛔ **not started** (stretch; deliberately skipped) |
+| 8 | MCP → skill converter | ✅ built, and measured against a real MCP server |
 
 Items 1–7 are done. Every "verified" above means I drove the real app headless
 and looked at the result, not that the code compiles. Item 8 was left untouched
 rather than half-built.
 
-Beyond the list: **multi-turn conversations** (`--resume`), **Run-in-terminal**
-with transcript tailing, **~90-language editor support**, and a **42-check test
-suite** (`cd backend && python3 -m tests.test_descant`).
+Beyond the original list, all five differentiating features are built (see
+**The five differentiating features** below), plus **multi-turn conversations**
+(`--resume`), **Run-in-terminal** with transcript tailing, **~90-language editor
+support**, and a **74-check test suite**
+(`cd backend && python3 -m tests.test_descant`).
 
 ---
 
@@ -98,6 +100,91 @@ everything else would need a real LSP bridge, which is a project of its own.
 
 ---
 
+## The five differentiating features
+
+All five are built and working in the app. Each has its own activity-bar panel
+except #1, which lives in the session inspector.
+
+### 1. Context-cost inspector ✅ *extended*
+
+Was already there, but bundled everything Claude Code injects into one "system
+prompt" number. Now **MCP schemas and skill listings are their own measured
+rows**, carved out of the preamble using real side-channel data — MCP servers
+are probed for their actual schemas, skills are read from `SKILL.md`
+frontmatter — leaving the system-prompt row as the honest remainder. Rows are
+hidden rather than shown as a confident zero when a repo has nothing to measure.
+
+Also surfaces **injected context** (skill listings, tool listings, system
+reminders): ~11–18% of a real window, and invisible in every other UI.
+
+### 2. MCP → skill converter ✅
+
+`backend/descant/mcp.py`. The part that matters: **it measures rather than
+estimates.** Descant spawns the server, speaks JSON-RPC (`initialize`,
+`tools/list`) and counts the schemas it actually returns.
+
+Conversion writes a `SKILL.md` whose frontmatter is a few dozen tokens plus a
+*working* MCP stdio client. Verified end-to-end against
+`fixtures/mcp/weather_server.py` — a real MCP server with invented data:
+
+> 4 tools, **702 measured tokens** → **44-token** skill listing, a **16×**
+> reduction — and the generated client really does `--list` and call the tools.
+
+Converting **detaches the server by default**, because a converted server left
+attached costs *more*: you would carry both the schemas and the skill.
+
+### 3. Skill mining from transcripts ✅
+
+`backend/descant/mining.py`. Deterministic and offline — no model in the loop;
+output is a proposal a human accepts.
+
+Nearly all the work was **not producing noise**. Each filter was added after
+watching raw output bury a real finding:
+
+| Filter | Why |
+|---|---|
+| Signature normalisation | `pytest tests/a.py` and `pytest tests/b.py` must collide, or nothing ever repeats |
+| Period collapse | A 3-step loop caught mid-cycle over 5 steps is the same loop. The period test deliberately does **not** require exact division |
+| Rotation merge | `A→B→C` and `B→C→A` are one workflow seen from different starting points |
+| Cycle-aware subsumption | `C→A` is the wrap-around fragment of `A→B→C`, not a new finding |
+| Require ≥1 command | "Read a file then edit it" recurred **17× across 4 sessions** and is not a skill — it is what every agent does all day |
+
+Before these, the top three results were phase-shifted rotations of one loop.
+After, the fixtures yield exactly the two workflows that are really there.
+
+### 4. Per-repo tool loadout ✅
+
+`backend/descant/loadout.py` + the Loadout panel. Every row carries what it
+costs **on every turn** — that number is the entire argument.
+
+For skills it separates **always-on listing cost** (name + description, charged
+every turn whether or not the skill fires) from **body cost** (only on
+invocation). A skill with a 900-word description is expensive in a way nothing
+else shows you.
+
+Writes go to the narrowest scope that works — MCP enablement to
+`~/.claude.json`, skills to `settings.local.json`. Descant **never rewrites a
+checked-in `.mcp.json` or `settings.json`**: those are the team's shared
+definition and editing them silently would surprise everyone else.
+
+### 5. Shared, searched capability library ✅ *with an honest caveat*
+
+`backend/descant/library.py` indexes every skill and MCP tool across all repos.
+
+**This is lexical retrieval, not embeddings** — BM25 over name/description/body
+with field boosting and a hand-built synonym map. That is a constraint, not a
+design preference: embeddings need either a network call per query or a local
+model, and this sandbox has neither. It behaves semantically where the synonyms
+reach (`"test"` finds pytest, `"csv"` finds the spreadsheet skill) and lexically
+elsewhere. **The UI says so on the page** rather than implying more.
+
+Swapping in a real embedding backend means replacing `score_query()` and
+nothing else — the index, the API and the UI are all agnostic to how a query
+becomes scores. That is the one place I would spend the next hour.
+
+
+---
+
 ## Real vs mocked
 
 | Thing | Real or mocked |
@@ -113,6 +200,12 @@ everything else would need a real LSP bridge, which is a project of its own.
 | Editor / diff | **Real** Monaco, ~90 languages; diffs reconstructed from actual edit events. |
 | `fixtures/projects/` | **Synthetic** (`fixtures/generate.py`), in the exact real format. |
 | `sandbox-repo/` | Real files, deliberately trivial — a safe target for live runs. |
+| MCP server discovery + schema cost | **Real and measured.** Servers are spawned and asked over JSON-RPC; nothing is estimated from a table. |
+| Generated MCP skill | **Real and runnable** — verified listing and calling tools. |
+| Mined workflows | **Real.** Computed from actual transcript history. |
+| Skill listing / body costs | **Real** file sizes; token figure is the usual chars-per-token estimate. |
+| Library ranking | **Real BM25**, but **lexical not embeddings** — see feature 5. |
+| `fixtures/mcp/weather_server.py` | A **real MCP server**; only the weather data is invented. |
 
 **Nothing in the UI is a hardcoded mock.** Every number on screen is computed
 from a transcript or a live process.

@@ -51,6 +51,18 @@ to either for machine-readable output.
 - **Bottom** — a real shell (`` Ctrl+` ``) rooted in the open session's repo.
   This is where live sessions actually run.
 
+### The four extra panels (activity bar, left edge)
+
+| Panel | What it does |
+|---|---|
+| **Tool loadout** | Every MCP server and skill attached to the repo, with what each costs **on every turn**. Toggle them off; convert an MCP server into a thin skill (the preview shows the saving before anything is written). |
+| **Mined workflows** | Repeated tool sequences found in your transcript history, with the real commands and a ready `SKILL.md`. Sequences seen across *multiple sessions* rank highest. |
+| **Capability library** | Search every skill and MCP tool across all repos. Ranking is BM25 + synonyms — lexical, not embeddings; the panel says so. |
+| **Session inspector** | Click any session: where its context went, split by system prompt / tool schemas / MCP schemas / skill listings / conversation. |
+
+MCP servers are **measured, not estimated** — Descant spawns each one and asks
+it over JSON-RPC what tools it exposes, then counts the schemas.
+
 To start a live session: pick the target repo in the dropdown at the bottom
 right, type a prompt, hit **Run** (or `Cmd/Ctrl+Enter`).
 

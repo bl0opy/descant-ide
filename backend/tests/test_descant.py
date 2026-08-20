@@ -243,6 +243,169 @@ def test_token_helpers():
     check("formatting", tokens.fmt_tokens(1500) == "1.5k" and tokens.fmt_tokens(12) == "12")
 
 
+
+
+# ==========================================================================
+# Feature modules: skills, MCP, mining, library
+# ==========================================================================
+
+
+def test_skill_frontmatter_parsing():
+    """Frontmatter is parsed without a YAML dependency, tolerantly."""
+    from descant import skills
+
+    meta, body = skills.parse_frontmatter(
+        '---\nname: thing\ndescription: "Quoted, with: a colon"\n---\n# Body\ntext\n'
+    )
+    check("name parsed", meta["name"] == "thing")
+    check(meta["description"] == "Quoted, with: a colon", "quotes stripped, colon kept")
+    check("body separated", body.startswith("# Body"))
+
+    meta2, body2 = skills.parse_frontmatter("no frontmatter here")
+    check("missing frontmatter is not fatal", meta2 == {} and body2 == "no frontmatter here")
+
+    # Block scalars fold onto one line.
+    meta3, _ = skills.parse_frontmatter("---\ndescription: |\n  line one\n  line two\n---\nx")
+    check("block scalar folded", "line one line two" == meta3["description"])
+
+
+def test_mcp_conversion_shrinks_and_is_runnable():
+    """Converting a server produces a smaller listing and a real client."""
+    from descant import mcp
+
+    server = mcp.McpServer(
+        name="weather",
+        config={"command": "python3", "args": ["/tmp/x.py"]},
+        source=".mcp.json",
+        probed=True,
+        tools=[
+            mcp.McpTool("get_forecast", "Get a forecast for a place.", {"type": "object"}),
+            mcp.McpTool("get_current", "Get current conditions.", {"type": "object"}),
+        ],
+    )
+    saving = mcp.conversion_savings(server)
+    check("conversion reduces cost", saving["before_tokens"] > saving["after_tokens"])
+    rendered = mcp.render_skill(server)
+    check("SKILL.md rendered", "weather/SKILL.md" in rendered["files"])
+    check("client rendered", "weather/mcp_call.py" in rendered["files"])
+    check(
+        "tools/call" in rendered["files"]["weather/mcp_call.py"],
+        "client actually speaks MCP rather than being a stub",
+    )
+    check(
+        "get_forecast" in rendered["files"]["weather/SKILL.md"],
+        "tool names listed for discoverability",
+    )
+
+
+def test_mining_collapses_cycles_and_rotations():
+    """The de-noising rules are the whole value; pin them."""
+    from descant import mining
+
+    check(
+        mining._base_period(("A", "B", "C", "A", "B")) == ("A", "B", "C"),
+        "partial cycle collapses (must not require exact division)",
+    )
+    check(mining._base_period(("A", "B", "A", "B")) == ("A", "B"), "full cycle collapses")
+    check(mining._base_period(("A", "B", "C")) == ("A", "B", "C"), "non-cycle left alone")
+    check(
+        mining._canonical_rotation(("B", "C", "A")) == ("A", "B", "C"),
+        "rotations share a representative",
+    )
+
+
+def test_mining_signature_normalisation():
+    from descant import mining
+
+    check(
+        mining.signature("tool_use", "Bash", {"command": "pytest -x tests/foo.py"})
+        == mining.signature("tool_use", "Bash", {"command": "pytest -x tests/bar.py"}),
+        "paths generalised away so sequences can repeat",
+    )
+    check(
+        mining.signature("tool_use", "Bash", {"command": "git commit -m 'x'"}) == "Bash(git commit)",
+        "subcommand kept",
+    )
+    check("noise dropped", mining.signature("tool_use", "Bash", {"command": "cd /tmp"}) is None)
+    check(
+        mining.signature("tool_use", "Read", {"file_path": "/a/b/c.py"}) == "Read(.py)",
+        "file type is the signal, not the path",
+    )
+
+
+def test_mining_requires_a_command():
+    """Read-then-edit is what every session does; it is never a workflow."""
+    from descant import mining
+    from descant.transcript import Event, Session
+    from pathlib import Path
+
+    def make(sid):
+        s = Session(session_id=sid, path=Path("/x"), project_key="p", cwd="/repo")
+        for _ in range(4):
+            s.events.append(Event(kind="tool_use", tool_name="Read", tool_input={"file_path": "a.py"}))
+            s.events.append(Event(kind="tool_use", tool_name="Edit", tool_input={"file_path": "a.py"}))
+        return s
+
+    found = mining.mine([make("s1"), make("s2")])
+    check("pure read/edit repetition yields no candidates", not found)
+
+
+def test_library_ranks_by_meaning_where_synonyms_reach():
+    from descant import library
+
+    lib = library.Library()
+    lib.entries = [
+        library.Entry(
+            key="a", kind="skill", name="xlsx", source="user",
+            description="Read and write spreadsheets and csv files.",
+        ),
+        library.Entry(
+            key="b", kind="skill", name="docx", source="user",
+            description="Create and edit Word documents.",
+        ),
+    ]
+    lib.finalize()
+    top = lib.score_query("turn a csv into a chart")
+    check("csv query finds the spreadsheet skill", top and top[0]["name"] == "xlsx")
+    check(
+        all(m not in ("into", "turn", "a") for r in top for m in r["matched"]),
+        "filler words do not count as matches",
+    )
+    top2 = lib.score_query("edit a word document")
+    check("document query finds docx", top2 and top2[0]["name"] == "docx")
+
+
+def test_inspector_carves_measured_attribution_from_preamble():
+    """MCP/skill rows come out of the preamble; the system prompt keeps the rest."""
+    from descant import inspector
+    from descant.transcript import Event, Session
+    from pathlib import Path
+
+    s = Session(session_id="s", path=Path("/x"), project_key="p", cwd="/repo")
+    s.events.append(Event(kind="user_text", text="hello"))
+    s.events.append(Event(kind="assistant_text", text="hi"))
+    s.requests.append(
+        {"request_id": "r1", "ts": None, "input_tokens": 1,
+         "cache_creation_input_tokens": 20000, "cache_read_input_tokens": 0,
+         "output_tokens": 10}
+    )
+
+    plain = inspector.analyze(s)
+    with_attr = inspector.analyze(
+        s, attribution={"mcp_tokens": 3000, "skill_tokens": 1000, "source": "test"}
+    )
+    check("mcp carved out", with_attr.mcp_schema_tokens == 3000)
+    check("skills carved out", with_attr.skill_listing_tokens == 1000)
+    check(
+        with_attr.system_prompt_tokens < plain.system_prompt_tokens,
+        "system prompt shrinks by exactly what was attributed elsewhere",
+    )
+    check(
+        abs(with_attr.preamble_tokens - plain.preamble_tokens) < 2,
+        "the measured preamble itself is unchanged — only its split",
+    )
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
