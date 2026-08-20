@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from . import config, events, library, loadout, mcp, mining
+from . import config, events, library, loadout, mcp, mining, skills
 from .inspector import analyze
 from .runner import MANAGER
 from .tailer import newest_transcript, tail_session
@@ -85,6 +85,10 @@ class _Cache:
 
 CACHE = _Cache()
 
+#: Probing MCP servers spawns processes, so per-repo attribution is memoised for
+#: the life of the server. Toggling a server clears it.
+_ATTRIBUTION_CACHE: dict[str, dict] = {}
+
 
 # --------------------------------------------------------------------------
 # read endpoints
@@ -105,10 +109,38 @@ def health() -> dict:
     }
 
 
+async def _attribution_for(repo_path: str) -> dict:
+    """Measured MCP + skill cost for a repo, for the inspector's preamble split.
+
+    Cached per repo because probing MCP servers spawns processes; a session list
+    over twenty repos must not spawn twenty server handshakes on every refresh.
+    """
+    if repo_path in _ATTRIBUTION_CACHE:
+        return _ATTRIBUTION_CACHE[repo_path]
+    result = {"mcp_tokens": 0, "skill_tokens": 0, "source": "not measured"}
+    if Path(repo_path).is_dir():
+        try:
+            servers = await mcp.discover_and_probe(repo_path, do_probe=True)
+            found = skills.discover(repo_path)
+            result = {
+                "mcp_tokens": sum(s.token_cost for s in servers if s.enabled),
+                "skill_tokens": skills.listing_cost(found),
+                "source": "MCP probe + SKILL.md frontmatter",
+            }
+        except Exception:
+            pass
+    _ATTRIBUTION_CACHE[repo_path] = result
+    return result
+
+
 @app.get("/api/sessions")
-def list_sessions() -> dict:
+async def list_sessions() -> dict:
     """Every historical session, grouped by repo, with its context breakdown."""
-    reports = [analyze(s) for s in CACHE.all()]
+    sessions = CACHE.all()
+    attributions = {}
+    for repo in {s.repo_path for s in sessions}:
+        attributions[repo] = await _attribution_for(repo)
+    reports = [analyze(s, attribution=attributions.get(s.repo_path)) for s in sessions]
     repos: dict[str, dict] = {}
     for r in reports:
         s = r.session
@@ -142,11 +174,11 @@ def list_sessions() -> dict:
 
 
 @app.get("/api/sessions/{session_id}")
-def get_session(session_id: str) -> dict:
+async def get_session(session_id: str) -> dict:
     sess = CACHE.one(session_id)
     if sess is None:
         raise HTTPException(404, f"no session {session_id}")
-    report = analyze(sess)
+    report = analyze(sess, attribution=await _attribution_for(sess.repo_path))
     return {
         **report.to_dict(),
         "events": [events.from_transcript_event(e) for e in sess.events],
@@ -154,11 +186,11 @@ def get_session(session_id: str) -> dict:
 
 
 @app.get("/api/sessions/{session_id}/context")
-def get_context(session_id: str) -> dict:
+async def get_context(session_id: str) -> dict:
     sess = CACHE.one(session_id)
     if sess is None:
         raise HTTPException(404, f"no session {session_id}")
-    return analyze(sess).to_dict()
+    return analyze(sess, attribution=await _attribution_for(sess.repo_path)).to_dict()
 
 
 @app.get("/api/files")
@@ -354,11 +386,13 @@ class ToggleBody(BaseModel):
 
 @app.post("/api/loadout/mcp")
 def toggle_mcp(body: ToggleBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
     return loadout.set_mcp_enabled(body.repo, body.name, body.enabled)
 
 
 @app.post("/api/loadout/skill")
 def toggle_skill(body: ToggleBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
     return loadout.set_skill_enabled(body.repo, body.name, body.enabled)
 
 

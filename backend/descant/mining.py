@@ -185,6 +185,12 @@ def _example_commands(sessions: list[Session], seq: tuple[str, ...]) -> list[str
             sig = signature(ev.kind, ev.tool_name, ev.tool_input)
             if sig in wanted and ev.tool_name == "Bash":
                 cmd = str((ev.tool_input or {}).get("command", "")).strip()
+                # Commands routinely carry heredocs and multi-line commit
+                # messages; the example is meant to jog memory, not reproduce
+                # the whole invocation.
+                cmd = cmd.split("\n", 1)[0].strip()
+                if len(cmd) > 120:
+                    cmd = cmd[:117].rstrip() + "…"
                 if cmd and cmd not in seen:
                     seen.add(cmd)
                     out.append(cmd)

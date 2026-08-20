@@ -1078,3 +1078,324 @@ textarea:focus {
   color: var(--fg-faint);
   font-style: italic;
 }
+
+/* ==========================================================================
+   Loadout, mining and library panels
+   ========================================================================== */
+
+.muted {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  max-width: 70ch;
+}
+
+.muted code,
+.lib-matched code {
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.h2-note {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: var(--weight-normal);
+  color: var(--fg-faint);
+  margin-left: var(--space-4);
+}
+
+/* --- headline stats ------------------------------------------------------ */
+
+.stat-row {
+  display: flex;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-6);
+}
+
+.stat {
+  flex: 1 1 var(--stat-min-width);
+  min-width: var(--stat-min-width);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+}
+
+.stat.accent {
+  border-color: var(--accent);
+}
+
+.stat-value {
+  font-size: var(--text-xl);
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-bold);
+}
+
+.stat-label {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  margin-top: var(--space-1);
+}
+
+/* --- loadout rows -------------------------------------------------------- */
+
+.loadout-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-4);
+  background: var(--bg-raised);
+  flex-wrap: wrap;
+}
+
+.loadout-row.off {
+  opacity: 0.5;
+}
+
+.loadout-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.loadout-name {
+  color: var(--fg-strong);
+  font-weight: var(--weight-medium);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.loadout-sub {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  margin-top: var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.loadout-cmd,
+.loadout-desc {
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+  margin-top: var(--space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.loadout-cmd {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.unmeasured {
+  color: var(--warning);
+}
+
+.toggle {
+  width: var(--toggle-width);
+  height: var(--toggle-height);
+  border-radius: var(--toggle-height);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  position: relative;
+  flex: 0 0 auto;
+  transition: background var(--transition-fast);
+}
+
+.toggle span {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: calc(var(--toggle-height) - 4px);
+  height: calc(var(--toggle-height) - 4px);
+  border-radius: 50%;
+  background: var(--fg-muted);
+  transition: transform var(--transition-fast);
+}
+
+.toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle.on span {
+  background: var(--fg-inverse);
+  transform: translateX(calc(var(--toggle-width) - var(--toggle-height)));
+}
+
+.btn.small {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-xs);
+}
+
+.tool-list {
+  flex-basis: 100%;
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+}
+
+.tool-list-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--fg-muted);
+  padding: var(--space-1) 0;
+}
+
+.tool-list-row .tcost {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-faint);
+}
+
+/* --- mining -------------------------------------------------------------- */
+
+.mine-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  padding: var(--space-5);
+  margin-bottom: var(--space-5);
+}
+
+.mine-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.mine-flow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.mine-flow .step {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  color: var(--fg);
+}
+
+.mine-flow .arrow {
+  color: var(--fg-faint);
+}
+
+.mine-stats {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.mine-repos {
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+  margin-top: var(--space-4);
+}
+
+.mine-cmds {
+  background: var(--bg-code);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  overflow-x: auto;
+  margin: var(--space-3) 0 0;
+  user-select: text;
+}
+
+.mine-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+/* --- library ------------------------------------------------------------- */
+
+.lib-search {
+  display: flex;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.lib-search input {
+  flex: 1;
+  font-size: var(--text-md);
+  padding: var(--space-4) var(--space-5);
+}
+
+.retrieval-note {
+  margin-bottom: var(--space-6);
+  font-size: var(--text-xs);
+}
+
+.lib-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.lib-kind {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--fg-muted);
+}
+
+.lib-kind.mcp_tool {
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+}
+
+.lib-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.lib-name {
+  color: var(--fg-strong);
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.lib-desc {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  margin-top: var(--space-2);
+}
+
+.lib-matched {
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+  margin-top: var(--space-2);
+}
+
+.lib-cost {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}

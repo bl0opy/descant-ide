@@ -94,6 +94,11 @@ class ContextReport:
     conversation_tokens: int = 0
     preamble_tokens: int = 0
     preamble_is_measured: bool = False
+    #: Carved out of the preamble using measured side-channel data (MCP probes,
+    #: SKILL.md frontmatter) rather than guessed from the transcript.
+    mcp_schema_tokens: int = 0
+    skill_listing_tokens: int = 0
+    attribution_source: str = ""
     conversation_breakdown: dict[str, int] = field(default_factory=dict)
     tool_costs: list[ToolCost] = field(default_factory=list)
     attachment_breakdown: dict[str, int] = field(default_factory=dict)
@@ -102,7 +107,13 @@ class ContextReport:
 
     @property
     def total_tokens(self) -> int:
-        return self.system_prompt_tokens + self.tool_schema_tokens + self.conversation_tokens
+        return (
+            self.system_prompt_tokens
+            + self.tool_schema_tokens
+            + self.mcp_schema_tokens
+            + self.skill_listing_tokens
+            + self.conversation_tokens
+        )
 
     def pct(self, n: int) -> float:
         t = self.total_tokens
@@ -116,6 +127,9 @@ class ContextReport:
                 "total_tokens": self.total_tokens,
                 "system_prompt_tokens": self.system_prompt_tokens,
                 "tool_schema_tokens": self.tool_schema_tokens,
+                "mcp_schema_tokens": self.mcp_schema_tokens,
+                "skill_listing_tokens": self.skill_listing_tokens,
+                "attribution_source": self.attribution_source,
                 "conversation_tokens": self.conversation_tokens,
                 "preamble_tokens": self.preamble_tokens,
                 "preamble_is_measured": self.preamble_is_measured,
@@ -187,7 +201,7 @@ def _first_turn_tokens(session: Session) -> int:
     return total
 
 
-def analyze(session: Session) -> ContextReport:
+def analyze(session: Session, attribution: dict | None = None) -> ContextReport:
     measured = _measure(session)
     report = ContextReport(session=session, measured=measured)
 
@@ -263,12 +277,37 @@ def analyze(session: Session) -> ContextReport:
         report.preamble_tokens = tokens.estimate_tool_schemas(tools_seen) + 3000
         report.notes.append("No usable first-request usage data; preamble is a rough estimate.")
 
+    # --- split the preamble further, using measured side-channel data -----
+    # The transcript alone cannot tell you how much of the preamble is MCP
+    # schemas vs skills vs the base system prompt. But we can measure MCP
+    # schemas by probing the servers, and skill listings by reading SKILL.md
+    # frontmatter, so those two come out of the preamble as real numbers and
+    # the system prompt keeps the remainder.
+    if attribution:
+        report.mcp_schema_tokens = min(
+            attribution.get("mcp_tokens", 0), max(0, report.preamble_tokens - 500)
+        )
+        report.skill_listing_tokens = min(
+            attribution.get("skill_tokens", 0),
+            max(0, report.preamble_tokens - report.mcp_schema_tokens - 500),
+        )
+        report.attribution_source = attribution.get("source", "")
+
     schema_est = tokens.estimate_tool_schemas(tools_seen)
     # Only tools that were actually *called* appear in the transcript, so this
     # under-counts the schemas that were loaded but unused.  Clamp so the system
     # prompt never goes negative.
-    report.tool_schema_tokens = min(schema_est, max(0, report.preamble_tokens - 500))
-    report.system_prompt_tokens = max(0, report.preamble_tokens - report.tool_schema_tokens)
+    carved = report.mcp_schema_tokens + report.skill_listing_tokens
+    report.tool_schema_tokens = min(schema_est, max(0, report.preamble_tokens - carved - 500))
+    report.system_prompt_tokens = max(
+        0, report.preamble_tokens - report.tool_schema_tokens - carved
+    )
+    if attribution and (report.mcp_schema_tokens or report.skill_listing_tokens):
+        report.notes.append(
+            "MCP schema and skill-listing figures are measured directly (%s), then "
+            "subtracted from the preamble; the system-prompt row is the remainder."
+            % (report.attribution_source or "live probe")
+        )
     if tools_seen:
         report.notes.append(
             "Tool-schema figure covers the %d tool(s) this session actually called; "
@@ -292,5 +331,5 @@ def analyze(session: Session) -> ContextReport:
     return report
 
 
-def analyze_all(sessions) -> list[ContextReport]:
-    return [analyze(s) for s in sessions]
+def analyze_all(sessions, attribution: dict | None = None) -> list[ContextReport]:
+    return [analyze(s, attribution=attribution) for s in sessions]

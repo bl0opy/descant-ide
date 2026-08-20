@@ -41,10 +41,20 @@ W_BODY = 1.0
 
 _WORD = re.compile(r"[a-z0-9]+")
 
+# Deliberately broad. A query is a sentence ("turn a csv into a chart"), so
+# without this the filler words match everything and drown the real signal --
+# "into" was scoring hits on half the corpus before it was added here.
 _STOP = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how", "in",
-    "is", "it", "of", "on", "or", "that", "the", "this", "to", "use", "used",
-    "using", "when", "with", "you", "your", "if", "want", "wants", "do", "does",
+    "a", "an", "and", "any", "are", "as", "at", "be", "been", "both", "but", "by",
+    "can", "could", "do", "does", "each", "for", "from", "get", "give", "has",
+    "have", "how", "if", "in", "into", "is", "it", "its", "just", "make", "makes",
+    "many", "may", "me", "might", "more", "most", "my", "need", "needs", "new",
+    "not", "of", "on", "one", "only", "or", "other", "out", "over", "own",
+    "please", "put", "same", "set", "should", "so", "some", "such", "take",
+    "than", "that", "the", "their", "them", "then", "there", "these", "they",
+    "this", "those", "to", "turn", "under", "up", "us", "use", "used", "using",
+    "very", "want", "wants", "was", "way", "we", "were", "what", "when", "where",
+    "which", "who", "why", "will", "with", "would", "you", "your",
 }
 
 # The "semantic" layer, such as it is: query terms expand to related terms so a

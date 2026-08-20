@@ -178,7 +178,14 @@
   }
 
   function openTab(tab) {
-    if (!S.tabs.find((t) => t.key === tab.key)) S.tabs.push(tab);
+    const existing = S.tabs.find((t) => t.key === tab.key);
+    if (existing) {
+      // Re-opening replaces the payload/renderer: a loadout tab reopened after
+      // a toggle must draw the new state, not the closure it was created with.
+      Object.assign(existing, tab);
+    } else {
+      S.tabs.push(tab);
+    }
     activateTab(tab.key);
   }
 
@@ -189,6 +196,12 @@
     for (const v of document.querySelectorAll('.view')) v.classList.remove('active');
     if (!tab) {
       $('view-welcome').classList.add('active');
+      return;
+    }
+    if (tab.view === 'panel') {
+      showLanguage(null);
+      $('view-panel-generic').classList.add('active');
+      tab.render($('view-panel-generic'));
       return;
     }
     if (tab.view === 'inspector') {
@@ -616,8 +629,135 @@
   const ACTIVITIES = [
     { id: 'sessions', icon: 'sessions', title: 'Sessions', onSelect: showSessions },
     { id: 'files', icon: 'files', title: 'Explorer', onSelect: showFiles },
+    { id: 'loadout', icon: 'loadout', title: 'Tool loadout', onSelect: showLoadout },
+    { id: 'mining', icon: 'mining', title: 'Mined workflows', onSelect: showMining },
+    { id: 'library', icon: 'library', title: 'Capability library', onSelect: showLibrary },
     { id: 'terminal', icon: 'terminal', title: 'Terminal', onSelect: togglePanel },
   ];
+
+  // ======================================================================
+  // Loadout / mining / library  (features 2-5)
+  // ======================================================================
+
+  /** Open (or re-render) a panel tab backed by a fetch + a renderer. */
+  function openPanelTab(key, label, render) {
+    openTab({ key, label, view: 'panel', render });
+  }
+
+  function loadoutRepo() {
+    return currentRepoPath() || $('composer-target').value;
+  }
+
+  async function showLoadout() {
+    const repo = loadoutRepo();
+    if (!repo) {
+      toast('no repo on this machine to inspect', true);
+      return;
+    }
+    openPanelTab('loadout:' + repo, `Loadout · ${repo.split('/').pop()}`, async (host) => {
+      host.innerHTML = '<div class="inspector"><p class="muted">Probing MCP servers…</p></div>';
+      try {
+        const data = await api(`/api/loadout?repo=${encodeURIComponent(repo)}`);
+        window.Panels.renderLoadout(host, data, {
+          toggleMcp: async (name, enabled) => {
+            await api('/api/loadout/mcp', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ repo, name, enabled }),
+            });
+            toast(`${name} ${enabled ? 'attached' : 'detached'}`);
+            showLoadout();
+          },
+          toggleSkill: async (name, enabled) => {
+            await api('/api/loadout/skill', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ repo, name, enabled }),
+            });
+            showLoadout();
+          },
+          previewConversion: async (name) => {
+            host.innerHTML =
+              '<div class="inspector"><p class="muted">Generating skill…</p></div>';
+            const preview = await api('/api/mcp/preview', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ repo, name }),
+            });
+            window.Panels.renderConversionPreview(host, preview, {
+              cancel: showLoadout,
+              confirmConversion: async (serverName) => {
+                const res = await api('/api/mcp/convert', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ repo, name: serverName, disable_after: true }),
+                });
+                toast(
+                  `wrote ${res.slug} skill · saved ~${res.saved_tokens} tokens per turn`
+                );
+                showLoadout();
+              },
+            });
+          },
+        });
+      } catch (err) {
+        host.innerHTML = `<div class="inspector"><p class="muted">${err.message}</p></div>`;
+      }
+    });
+  }
+
+  async function showMining() {
+    const repo = loadoutRepo();
+    const qs = repo ? `?repo=${encodeURIComponent(repo)}&limit=20` : '?limit=20';
+    openPanelTab('mining', 'Mined workflows', async (host) => {
+      host.innerHTML = '<div class="inspector"><p class="muted">Diffing transcripts…</p></div>';
+      try {
+        let data = await api('/api/mining' + qs);
+        // A single repo often has too little history; fall back to everything
+        // rather than showing an empty panel that looks broken.
+        if (!data.candidates.length && repo) data = await api('/api/mining?limit=20');
+        window.Panels.renderMining(host, data, {
+          acceptMined: async (c) => {
+            const target = repo || c.repos[0];
+            if (!target) {
+              toast('no repo on this machine to write the skill into', true);
+              return;
+            }
+            const res = await api('/api/mining/accept', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                repo: target,
+                slug: c.proposed_skill.slug,
+                skill_md: c.proposed_skill.skill_md,
+              }),
+            });
+            toast(`created ${res.slug} in ${target.split('/').pop()}`);
+          },
+        });
+      } catch (err) {
+        host.innerHTML = `<div class="inspector"><p class="muted">${err.message}</p></div>`;
+      }
+    });
+  }
+
+  async function showLibrary(query = '') {
+    openPanelTab('library', 'Capability library', async (host) => {
+      host.innerHTML = '<div class="inspector"><p class="muted">Indexing…</p></div>';
+      try {
+        const data = await api(`/api/library?q=${encodeURIComponent(query)}&limit=25`);
+        window.Panels.renderLibrary(host, data, {
+          search: (q) => {
+            query = q;
+            const tab = S.tabs.find((t) => t.key === 'library');
+            if (tab) tab.render(host);
+          },
+        });
+      } catch (err) {
+        host.innerHTML = `<div class="inspector"><p class="muted">${err.message}</p></div>`;
+      }
+    });
+  }
 
   function showSessions() {
     $('sidebar-title').textContent = 'Sessions';

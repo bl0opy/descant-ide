@@ -115,3 +115,15 @@
   --scrollbar-thumb: #4a4a4a;
   --scrollbar-thumb-hover: #5c5c5c;
 }
+
+/* --- loadout / mining / library ------------------------------------------ */
+:root {
+  --toggle-width: 34px;
+  --toggle-height: 18px;
+  --stat-min-width: 120px;
+}
+
+:root {
+  --cost-mcp: #f472b6;
+  --cost-skills: #34d399;
+}

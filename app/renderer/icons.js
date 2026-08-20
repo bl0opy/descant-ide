@@ -24,5 +24,20 @@ window.Icons = (() => {
       '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5v.5"/>',
       16
     ),
+    // Loadout: sliders, i.e. "tune what is attached".
+    loadout: wrap(
+      '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/>' +
+        '<circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'
+    ),
+    // Mining: a magnifier over repeated marks.
+    mining: wrap(
+      '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/><path d="M8 9h5M8 12h3"/>'
+    ),
+    // Library: stacked volumes.
+    library: wrap(
+      '<path d="M5 4h4v16H5zM11 4h4v16h-4z"/><path d="M17.5 4.6l3 15.2"/>'
+    ),
+    check: wrap('<path d="M4 12l5 5L20 6"/>', 16),
+    spark: wrap('<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>', 16),
   };
 })();
