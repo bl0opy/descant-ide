@@ -130,11 +130,27 @@ class RunManager:
                 f"`{config.CLAUDE_BIN}` not found on PATH; set DESCANT_CLAUDE_BIN"
             )
 
-        run_id = uuid.uuid4().hex[:12]
         # Always pin an explicit session id.  Without it the child can inherit
         # CLAUDE_SESSION_ID from the environment and write into somebody else's
         # transcript -- observed in this sandbox.
         session_id = resume or str(uuid.uuid4())
+
+        # A follow-up turn continues the run it belongs to rather than spawning a
+        # second sidebar entry for the same conversation.  `claude -p` answers
+        # once and exits, so a multi-turn session is a series of processes whose
+        # continuity lives in --resume; the Run object is what makes that look
+        # like one thread to the user.
+        existing = None
+        if resume:
+            existing = next(
+                (
+                    r
+                    for r in self.runs.values()
+                    if r.session_id == resume and r.status != RUNNING
+                ),
+                None,
+            )
+        run_id = existing.run_id if existing else uuid.uuid4().hex[:12]
 
         argv = [
             config.CLAUDE_BIN,
@@ -153,13 +169,21 @@ class RunManager:
         if model:
             argv += ["--model", model]
 
-        run = Run(
-            run_id=run_id,
-            cwd=str(cwd_path),
-            prompt=prompt,
-            session_id=session_id,
-            resumed_from=resume,
-        )
+        if existing:
+            run = existing
+            run.prompt = prompt
+            run.ended_at = None
+            run.exit_code = None
+            run.pending_permissions.clear()
+            run.needs_action = ""
+        else:
+            run = Run(
+                run_id=run_id,
+                cwd=str(cwd_path),
+                prompt=prompt,
+                session_id=session_id,
+                resumed_from=resume,
+            )
         self.runs[run_id] = run
 
         env = dict(os.environ)
@@ -181,7 +205,11 @@ class RunManager:
             events.make(
                 "status",
                 subtype="spawn",
-                text=f"$ {config.CLAUDE_BIN} -p … (cwd: {cwd_path})",
+                text=(
+                    f"continuing session {session_id[:8]}"
+                    if resume
+                    else f"$ {config.CLAUDE_BIN} -p … (cwd: {cwd_path})"
+                ),
                 meta={"argv": argv, "cwd": str(cwd_path)},
             )
         )

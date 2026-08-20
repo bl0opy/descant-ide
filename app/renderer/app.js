@@ -352,15 +352,29 @@
       toast('no runnable repo — none of these transcripts point at a path on this machine', true);
       return;
     }
+    // Continue the selected conversation rather than starting a new one, when
+    // there is one to continue.  A live run that has finished resumes by its
+    // session id; so does a historical transcript in a repo that still exists.
+    let resume = null;
+    if (S.selected?.type === 'run') {
+      const r = S.live.find((x) => x.run_id === S.selected.id);
+      if (r && r.status !== 'running' && r.cwd === cwd) resume = r.session_id;
+    } else if (S.selected?.type === 'session') {
+      const repo = selectedRepo();
+      if (repo?.exists && repo.repo_path === cwd) resume = S.selected.id;
+    }
+
     $('btn-send').disabled = true;
     try {
       const run = await api('/api/runs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, cwd }),
+        body: JSON.stringify({ prompt, cwd, resume }),
       });
       $('composer-input').value = '';
-      S.live.unshift(run);
+      const i = S.live.findIndex((r) => r.run_id === run.run_id);
+      if (i >= 0) S.live[i] = run;
+      else S.live.unshift(run);
       renderSidebar();
       refreshStatusbar();
       await openRun(run.run_id);
