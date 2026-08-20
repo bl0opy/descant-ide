@@ -130,5 +130,18 @@ window.Term = (() => {
     return Boolean(Terminal);
   }
 
-  return { init, open, fitActive, available, loadError: () => loadError };
+  /** Type a command into a repo's shell and press enter. */
+  function send(cwd, command) {
+    const id = cwd || 'default';
+    if (!sessions.has(id)) return false;
+    window.descant.pty.write(id, command.endsWith('\n') ? command : command + '\n');
+    sessions.get(id).term.focus();
+    return true;
+  }
+
+  function focus() {
+    sessions.get(activeId)?.term.focus();
+  }
+
+  return { init, open, send, focus, fitActive, available, loadError: () => loadError };
 })();

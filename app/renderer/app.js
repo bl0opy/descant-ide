@@ -58,10 +58,10 @@
   // ======================================================================
 
   function statusOfSession(sessionData) {
-    // Historical transcripts have no process; a live run for the same repo
-    // takes precedence and lends its status.
-    const run = S.live.find((r) => r.session_id === sessionData.session_id);
-    return run ? run.status : 'idle';
+    // History is idle by definition; a session we are actively following lends
+    // its live status to the matching row.
+    const live = S.live.find((r) => r.sessionId === sessionData.session_id);
+    return live ? live.status : 'idle';
   }
 
   function renderSidebar() {
@@ -73,10 +73,10 @@
         groupEl(
           'Live runs',
           S.live.map((r) => ({
-            id: r.run_id,
-            type: 'run',
-            label: r.prompt || '(no prompt)',
-            sub: r.repo_name,
+            id: r.sessionId || r.cwd,
+            type: 'live',
+            label: r.prompt || r.sessionId || '(starting…)',
+            sub: r.cwd.split('/').pop(),
             status: r.status,
           })),
           'live'
@@ -142,7 +142,12 @@
           it.tokens != null ? fmtTokens(it.tokens) : it.sub || ''
         )}</span>`;
       row.addEventListener('click', () =>
-        it.type === 'run' ? openRun(it.id) : openSession(it.id)
+        it.type === 'live'
+          ? followRepo(
+              S.live.find((r) => (r.sessionId || r.cwd) === it.id).cwd,
+              S.live.find((r) => (r.sessionId || r.cwd) === it.id).sessionId
+            )
+          : openSession(it.id)
       );
       list.appendChild(row);
     }
@@ -187,6 +192,7 @@
       return;
     }
     if (tab.view === 'inspector') {
+      showLanguage(null);
       $('view-inspector').classList.add('active');
       renderInspector($('view-inspector'), tab.payload);
     } else if (tab.view === 'editor' || tab.view === 'diff') {
@@ -200,7 +206,9 @@
           tab.view === 'diff'
             ? window.Editor.openDiff(tab.payload.path, tab.payload.before, tab.payload.after)
             : window.Editor.openFile(tab.payload.path, tab.payload.text);
-        p.catch((e) => toast(`editor: ${e.message}`, true));
+        p.then(() => showLanguage(tab.payload.path)).catch((e) =>
+          toast(`editor: ${e.message}`, true)
+        );
       }
     }
   }
@@ -215,6 +223,18 @@
   // ======================================================================
   // agent panel
   // ======================================================================
+
+  /** Status-bar language indicator, straight from Monaco's own detection. */
+  function showLanguage(path) {
+    const el = $('status-lang');
+    if (!path) {
+      el.textContent = '';
+      return;
+    }
+    const id = window.Editor.langFor(path);
+    el.textContent = id === 'plaintext' ? 'Plain Text' : id;
+    el.title = `${window.Editor.languageCount()} languages available`;
+  }
 
   function setAgentHeader({ title, meta, status }) {
     $('agent-title').textContent = title || 'Agent';
@@ -273,74 +293,29 @@
     }
   }
 
-  async function openRun(runId) {
-    S.selected = { type: 'run', id: runId };
-    renderSidebar();
-    closeWs();
-    $('agent-log').innerHTML = '';
-
-    const run = S.live.find((r) => r.run_id === runId);
-    setAgentHeader({
-      title: run?.prompt || 'Live run',
-      meta: run?.repo_name || '',
-      status: run?.status || 'running',
-    });
-    renderTargets();
-    if (run) {
-      $('titlebar-context').textContent = `${run.repo_name} — live`;
-      $('panel-cwd').textContent = run.cwd;
-      if (S.panelOpen) window.Term.open(run.cwd);
-    }
-
-    const url = S.api.replace(/^http/, 'ws') + `/ws/runs/${runId}`;
-    const ws = new WebSocket(url);
-    S.ws = ws;
-    ws.onmessage = (msg) => {
-      const ev = JSON.parse(msg.data);
-      if (ev.kind === 'ping') return;
-      if (ev.kind === 'meta') {
-        const i = S.live.findIndex((r) => r.run_id === ev.run.run_id);
-        if (i >= 0) S.live[i] = ev.run;
-        else S.live.unshift(ev.run);
-        setAgentHeader({
-          title: ev.run.prompt,
-          meta: `${ev.run.repo_name}${
-            ev.run.cost_usd ? ' · $' + ev.run.cost_usd.toFixed(3) : ''
-          }`,
-          status: ev.run.status,
-        });
-        updateRunControls(ev.run.status);
-        renderSidebar();
-        return;
-      }
-      if (ev.kind === 'status' && ev.subtype === 'state') {
-        const r = S.live.find((x) => x.run_id === runId);
-        if (r) r.status = ev.meta.status;
-        $('agent-dot').className = `dot ${ev.meta.status}`;
-        updateRunControls(ev.meta.status);
-        renderSidebar();
-        refreshStatusbar();
-      }
-      if (ev.kind === 'permission') toast(`${ev.tool_name} needs your decision`, true);
-      appendEvent(ev);
-    };
-    ws.onerror = () => toast('lost the live stream', true);
-    ws.onclose = () => {
-      if (S.ws === ws) S.ws = null;
-    };
-  }
-
   function updateRunControls(status) {
-    const active = status === 'running' || status === 'starting';
-    $('btn-stop').style.display = active ? '' : 'none';
-    $('btn-send').disabled = active;
-    $('btn-send').textContent = active ? 'Running…' : 'Run';
+    $('btn-stop').style.display =
+      status === 'running' || status === 'needs_input' ? '' : 'none';
   }
 
   // ======================================================================
   // starting a run
   // ======================================================================
 
+  /** Shell-quote a prompt for a single-quoted argv slot. */
+  function shQuote(s) {
+    return `'${String(s).replace(/'/g, `'\\''`)}'`;
+  }
+
+  /**
+   * Run Claude Code in the terminal, not as a headless subprocess.
+   *
+   * This is the whole point of the terminal panel: you get the real interactive
+   * CLI, which means permission prompts are answerable in place instead of just
+   * being reported after the fact. The agent panel follows along by tailing the
+   * transcript Claude Code writes, which is a better source than owning stdout —
+   * it survives Descant restarting and picks up sessions you started yourself.
+   */
   async function startRun() {
     const prompt = $('composer-input').value.trim();
     if (!prompt) {
@@ -352,43 +327,114 @@
       toast('no runnable repo — none of these transcripts point at a path on this machine', true);
       return;
     }
-    // Continue the selected conversation rather than starting a new one, when
-    // there is one to continue.  A live run that has finished resumes by its
-    // session id; so does a historical transcript in a repo that still exists.
+
+    if (!window.Term.available()) {
+      toast('terminal unavailable, so there is nowhere to run — see the console', true);
+      return;
+    }
+
+    // Continue the selected conversation when there is one to continue.
     let resume = null;
-    if (S.selected?.type === 'run') {
-      const r = S.live.find((x) => x.run_id === S.selected.id);
-      if (r && r.status !== 'running' && r.cwd === cwd) resume = r.session_id;
-    } else if (S.selected?.type === 'session') {
+    if (S.selected?.type === 'live' && S.selected.cwd === cwd) resume = S.selected.sessionId;
+    else if (S.selected?.type === 'session') {
       const repo = selectedRepo();
       if (repo?.exists && repo.repo_path === cwd) resume = S.selected.id;
     }
 
-    $('btn-send').disabled = true;
-    try {
-      const run = await api('/api/runs', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, cwd, resume }),
-      });
-      $('composer-input').value = '';
-      const i = S.live.findIndex((r) => r.run_id === run.run_id);
-      if (i >= 0) S.live[i] = run;
-      else S.live.unshift(run);
-      renderSidebar();
-      refreshStatusbar();
-      await openRun(run.run_id);
-    } catch (err) {
-      toast(`could not start: ${err.message}`, true);
-      $('btn-send').disabled = false;
+    togglePanel(true);
+    const opened = await window.Term.open(cwd);
+    if (opened && opened.ok === false) {
+      toast(opened.error, true);
+      return;
     }
+
+    const argv = ['claude'];
+    if (resume) argv.push('--resume', resume);
+    argv.push(shQuote(prompt));
+    // A freshly spawned pty has not drawn its prompt yet; typing immediately
+    // races the shell and the line can be swallowed.
+    const command = argv.join(' ');
+    setTimeout(() => {
+      if (!window.Term.send(cwd, command)) toast('terminal went away before launch', true);
+    }, opened && opened.reused ? 0 : 400);
+
+    $('composer-input').value = '';
+    // Attach the agent panel to whatever transcript this repo starts writing.
+    followRepo(cwd, resume, prompt);
+  }
+
+  // ======================================================================
+  // following a live session by its transcript
+  // ======================================================================
+
+  function upsertLive(entry) {
+    const key = entry.sessionId || entry.cwd;
+    const i = S.live.findIndex((r) => (r.sessionId || r.cwd) === key);
+    if (i >= 0) S.live[i] = { ...S.live[i], ...entry };
+    else S.live.unshift(entry);
+    renderSidebar();
+    renderActivityBar();
+    refreshStatusbar();
+  }
+
+  function followRepo(cwd, sessionId = null, prompt = null) {
+    S.selected = { type: 'live', cwd, sessionId };
+    upsertLive({ cwd, sessionId, status: 'running', prompt });
+    closeWs();
+    $('agent-log').innerHTML = '';
+    setAgentHeader({
+      title: sessionId ? `continuing ${sessionId.slice(0, 8)}` : 'live session',
+      meta: cwd.split('/').pop(),
+      status: 'running',
+    });
+    $('titlebar-context').textContent = `${cwd.split('/').pop()} — live`;
+
+    const qs = new URLSearchParams({ cwd, from_start: 'true' });
+    if (sessionId) qs.set('session_id', sessionId);
+    const ws = new WebSocket(`${S.api.replace(/^http/, 'ws')}/ws/tail?${qs}`);
+    S.ws = ws;
+    S.liveSessionId = sessionId;
+
+    ws.onmessage = (msg) => {
+      const ev = JSON.parse(msg.data);
+      if (ev.kind === 'ping') return;
+      if (ev.kind === 'meta') return;
+      if (ev.kind === 'status' && ev.subtype === 'attached') {
+        const prev = S.liveSessionId;
+        S.liveSessionId = ev.meta?.session_id || S.liveSessionId;
+        S.selected = { type: 'live', cwd, sessionId: S.liveSessionId };
+        // The placeholder row was keyed on cwd before we knew the id.
+        if (!prev) S.live = S.live.filter((r) => r.sessionId || r.cwd !== cwd);
+        upsertLive({ cwd, sessionId: S.liveSessionId, status: 'running' });
+        setAgentHeader({
+          title: `live · ${(S.liveSessionId || '').slice(0, 8)}`,
+          meta: cwd.split('/').pop(),
+          status: 'running',
+        });
+      }
+      if (ev.kind === 'status' && ev.subtype === 'state') {
+        const st = ev.meta?.status || 'idle';
+        $('agent-dot').className = `dot ${st}`;
+        updateRunControls(st);
+        upsertLive({ cwd, sessionId: S.liveSessionId, status: st });
+        if (st === 'needs_input') toast('Claude is waiting on you in the terminal', true);
+        return;
+      }
+      appendEvent(ev);
+    };
+    ws.onclose = () => {
+      if (S.ws === ws) S.ws = null;
+    };
   }
 
   /** The repo the selected thing belongs to — whether or not it exists here. */
   function selectedRepo() {
-    if (S.selected?.type === 'run') {
-      const r = S.live.find((x) => x.run_id === S.selected.id);
-      return r ? { repo_path: r.cwd, repo_name: r.repo_name, exists: true } : null;
+    if (S.selected?.type === 'live') {
+      return {
+        repo_path: S.selected.cwd,
+        repo_name: S.selected.cwd.split('/').pop(),
+        exists: true,
+      };
     }
     if (S.selected?.type === 'session') {
       return (
@@ -435,23 +481,26 @@
     const target = $('composer-target').value;
     const hint = $('composer-hint');
     if (repo && repo.exists === false) {
-      hint.textContent = `${repo.repo_name} isn't on this machine — running in ${target
+      hint.textContent = `${repo.repo_name} isn't on this machine — terminal will run in ${target
         .split('/')
         .pop()}`;
       hint.style.color = 'var(--warning)';
     } else {
-      hint.textContent = `runs in ${target || '—'}`;
+      hint.textContent = `runs \`claude\` in the terminal · ${
+        (target || '—').split('/').pop()
+      }`;
       hint.style.color = '';
     }
   }
 
-  async function stopRun() {
-    if (S.selected?.type !== 'run') return;
-    try {
-      await api(`/api/runs/${S.selected.id}/stop`, { method: 'POST' });
-    } catch (err) {
-      toast(err.message, true);
+  /** Ctrl-C into the repo's shell — the session lives there now. */
+  function stopRun() {
+    const cwd = S.selected?.cwd || currentRepoPath();
+    if (!cwd || !window.Term.send(cwd, '\u0003')) {
+      toast('no terminal running for this repo');
+      return;
     }
+    togglePanel(true);
   }
 
   // ======================================================================
@@ -627,7 +676,7 @@
     el.className = 'item' + (waiting ? ' warn' : '');
     el.textContent = S.live.length
       ? `${running} running · ${waiting} need you`
-      : 'no live runs';
+      : 'no live sessions';
   }
 
   async function refresh() {
@@ -661,20 +710,6 @@
 
     renderActivityBar();
     await refresh();
-
-    // Poll for live-run status so the sidebar dots stay honest even when the
-    // user is not attached to that run's socket.
-    setInterval(async () => {
-      try {
-        const { runs } = await api('/api/runs');
-        S.live = runs;
-        if (S.activeView === 'sessions') renderSidebar();
-        renderActivityBar();
-        refreshStatusbar();
-      } catch {
-        /* backend hiccup; the next tick will tell the truth */
-      }
-    }, 2500);
 
     $('btn-refresh').addEventListener('click', refresh);
     $('btn-send').addEventListener('click', startRun);
@@ -715,6 +750,9 @@
       console.warn('terminal unavailable:', window.Term.loadError());
     }
   }
+
+  // Exposed for headless verification (DESCANT_DRIVE); harmless in normal use.
+  window.followRepoForTest = followRepo;
 
   window.addEventListener('DOMContentLoaded', () =>
     boot().catch((err) => {

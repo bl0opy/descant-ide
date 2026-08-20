@@ -18,11 +18,45 @@ from pathlib import Path
 DEFAULT_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
-def projects_dir() -> Path:
-    """Resolve the transcript root, honouring DESCANT_PROJECTS_DIR."""
+def projects_dirs() -> list[Path]:
+    """Every transcript root to read, honouring DESCANT_PROJECTS_DIR.
+
+    Accepts an os.pathsep-separated list so the app can show bundled fixtures
+    *and* your real history at once -- which matters now that live sessions run
+    in the terminal and write to the real ~/.claude/projects.
+    """
     raw = os.environ.get("DESCANT_PROJECTS_DIR")
+    if not raw:
+        return [DEFAULT_PROJECTS_DIR]
+    out: list[Path] = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        p = Path(part).expanduser()
+        try:
+            p = p.resolve()
+        except OSError:
+            pass
+        if p not in out:
+            out.append(p)
+    return out or [DEFAULT_PROJECTS_DIR]
+
+
+def projects_dir() -> Path:
+    """The primary transcript root (first entry). Kept for the CLI's messages."""
+    return projects_dirs()[0]
+
+
+def live_projects_dir() -> Path:
+    """Where a `claude` started in the terminal will write its transcript.
+
+    Always the real location unless explicitly overridden -- a terminal session
+    does not know about our fixtures.
+    """
+    raw = os.environ.get("DESCANT_LIVE_PROJECTS_DIR")
     if raw:
-        return Path(raw).expanduser().resolve()
+        return Path(raw).expanduser()
     return DEFAULT_PROJECTS_DIR
 
 

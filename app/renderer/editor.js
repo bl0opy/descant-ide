@@ -70,20 +70,62 @@ window.Editor = (() => {
     });
   }
 
-  const EXT_LANG = {
-    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
-    ts: 'typescript', tsx: 'typescript', py: 'python', rb: 'ruby', go: 'go',
-    rs: 'rust', java: 'java', c: 'c', h: 'c', cpp: 'cpp', hpp: 'cpp',
-    cs: 'csharp', php: 'php', sh: 'shell', bash: 'shell', zsh: 'shell',
-    json: 'json', jsonl: 'json', yml: 'yaml', yaml: 'yaml', toml: 'ini',
-    ini: 'ini', md: 'markdown', html: 'html', css: 'css', scss: 'scss',
-    sql: 'sql', xml: 'xml', dockerfile: 'dockerfile',
-  };
+  // Language detection is delegated to Monaco's own registry rather than a
+  // hand-written extension map: monaco-editor ships ~90 language definitions
+  // and each one declares its extensions, filenames and aliases. Building the
+  // index from that means every language Monaco supports works, and a Monaco
+  // upgrade adds new ones for free.
+  let langIndex = null;
+
+  function buildLangIndex() {
+    const byExt = new Map();
+    const byFilename = new Map();
+    for (const lang of monaco.languages.getLanguages()) {
+      for (const ext of lang.extensions || []) {
+        byExt.set(ext.toLowerCase(), lang.id); // ".py"
+      }
+      for (const name of lang.filenames || []) {
+        byFilename.set(name.toLowerCase(), lang.id); // "Dockerfile"
+      }
+      for (const pattern of lang.filenamePatterns || []) {
+        const m = /^\*?(\.[A-Za-z0-9._-]+)$/.exec(pattern);
+        if (m) byExt.set(m[1].toLowerCase(), lang.id);
+      }
+    }
+    // A few Claude Code touches constantly that Monaco doesn't claim by default.
+    for (const [ext, id] of [
+      ['.jsonl', 'json'],
+      ['.mjs', 'javascript'],
+      ['.cjs', 'javascript'],
+      ['.zsh', 'shell'],
+      ['.tf', 'hcl'],
+      ['.toml', 'ini'],
+      ['.lock', 'ini'],
+    ]) {
+      if (!byExt.has(ext) && monaco.languages.getLanguages().some((l) => l.id === id)) {
+        byExt.set(ext, id);
+      }
+    }
+    return { byExt, byFilename };
+  }
 
   function langFor(path) {
+    if (!monaco) return 'plaintext';
+    if (!langIndex) langIndex = buildLangIndex();
     const name = (path || '').split('/').pop().toLowerCase();
-    if (name === 'dockerfile') return 'dockerfile';
-    return EXT_LANG[name.split('.').pop()] || 'plaintext';
+    if (langIndex.byFilename.has(name)) return langIndex.byFilename.get(name);
+    // Longest extension first so ".d.ts" beats ".ts".
+    const dot = name.indexOf('.');
+    for (let i = dot; i >= 0; i = name.indexOf('.', i + 1)) {
+      const hit = langIndex.byExt.get(name.slice(i));
+      if (hit) return hit;
+    }
+    return 'plaintext';
+  }
+
+  /** Every language this build can highlight — surfaced in the status bar. */
+  function languageCount() {
+    return monaco ? monaco.languages.getLanguages().length : 0;
   }
 
   function init(hostEl) {
@@ -146,5 +188,14 @@ window.Editor = (() => {
     diffEditor?.layout();
   }
 
-  return { init, load, openFile, openDiff, layout, current: () => currentPath };
+  return {
+    init,
+    load,
+    openFile,
+    openDiff,
+    layout,
+    langFor,
+    languageCount,
+    current: () => currentPath,
+  };
 })();

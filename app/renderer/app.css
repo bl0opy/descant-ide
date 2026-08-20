@@ -1062,3 +1062,19 @@ textarea:focus {
   border-color: var(--danger);
   color: var(--danger);
 }
+
+/* Injected context: present but visually subordinate to the conversation. */
+.tool.injected {
+  border-style: dashed;
+  background: transparent;
+}
+
+.tool.injected .name {
+  color: var(--fg-faint);
+  font-weight: var(--weight-normal);
+}
+
+.tool.injected .arg {
+  color: var(--fg-faint);
+  font-style: italic;
+}

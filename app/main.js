@@ -22,10 +22,14 @@ const HOST = process.env.DESCANT_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.DESCANT_PORT || '8787', 10);
 const API = `http://${HOST}:${PORT}`;
 
-// Default to the bundled fixtures so a fresh clone shows something real on
-// first launch.  Point DESCANT_PROJECTS_DIR at ~/.claude/projects for real data.
+// Read the bundled fixtures *and* the real history, so a fresh clone shows
+// something on first launch while live sessions — which run in the terminal and
+// write to the real location — still show up. Set DESCANT_PROJECTS_DIR to
+// override; it accepts a path.delimiter-separated list.
+const REAL_PROJECTS_DIR = path.join(require('node:os').homedir(), '.claude', 'projects');
 const PROJECTS_DIR =
-  process.env.DESCANT_PROJECTS_DIR || path.join(ROOT, 'fixtures', 'projects');
+  process.env.DESCANT_PROJECTS_DIR ||
+  [path.join(ROOT, 'fixtures', 'projects'), REAL_PROJECTS_DIR].join(path.delimiter);
 
 let backend = null;
 let win = null;

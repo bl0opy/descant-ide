@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from . import config, events
 from .inspector import analyze
 from .runner import MANAGER
+from .tailer import newest_transcript, tail_session
 from .transcript import Session, load_all, load_session
 
 app = FastAPI(title="Descant", version="0.1.0")
@@ -47,27 +48,31 @@ class _Cache:
         self._by_path: dict[str, tuple[tuple[float, int], Session]] = {}
 
     def all(self) -> list[Session]:
-        root = config.projects_dir()
-        if not root.exists():
-            return []
         sessions: list[Session] = []
-        for project in sorted(p for p in root.iterdir() if p.is_dir()):
-            for jsonl in sorted(project.glob("*.jsonl")):
-                try:
-                    st = jsonl.stat()
-                except OSError:
-                    continue
-                stamp = (st.st_mtime, st.st_size)
-                hit = self._by_path.get(str(jsonl))
-                if hit and hit[0] == stamp:
-                    sessions.append(hit[1])
-                    continue
-                try:
-                    sess = load_session(jsonl, project.name)
-                except OSError:
-                    continue
-                self._by_path[str(jsonl)] = (stamp, sess)
-                sessions.append(sess)
+        seen: set[str] = set()
+        for root in config.projects_dirs():
+            if not root.exists():
+                continue
+            for project in sorted(p for p in root.iterdir() if p.is_dir()):
+                for jsonl in sorted(project.glob("*.jsonl")):
+                    if str(jsonl) in seen:
+                        continue
+                    seen.add(str(jsonl))
+                    try:
+                        st = jsonl.stat()
+                    except OSError:
+                        continue
+                    stamp = (st.st_mtime, st.st_size)
+                    hit = self._by_path.get(str(jsonl))
+                    if hit and hit[0] == stamp:
+                        sessions.append(hit[1])
+                        continue
+                    try:
+                        sess = load_session(jsonl, project.name)
+                    except OSError:
+                        continue
+                    self._by_path[str(jsonl)] = (stamp, sess)
+                    sessions.append(sess)
         sessions.sort(key=lambda s: s.last_activity.timestamp() if s.last_activity else 0, reverse=True)
         return sessions
 
@@ -88,11 +93,13 @@ CACHE = _Cache()
 
 @app.get("/api/health")
 def health() -> dict:
-    root = config.projects_dir()
+    roots = config.projects_dirs()
     return {
         "ok": True,
-        "projects_dir": str(root),
-        "projects_dir_exists": root.exists(),
+        "projects_dir": str(roots[0]),
+        "projects_dirs": [str(r) for r in roots],
+        "live_projects_dir": str(config.live_projects_dir()),
+        "projects_dir_exists": any(r.exists() for r in roots),
         "claude_bin": config.CLAUDE_BIN,
         "live_runs": len(MANAGER.runs),
     }
@@ -127,7 +134,7 @@ def list_sessions() -> dict:
         reverse=True,
     )
     return {
-        "projects_dir": str(config.projects_dir()),
+        "projects_dir": os.pathsep.join(str(r) for r in config.projects_dirs()),
         "repos": ordered,
         "session_count": len(reports),
         "live": MANAGER.list(),
@@ -270,6 +277,34 @@ async def ws_run(ws: WebSocket, run_id: str) -> None:
         pass  # socket closed under us
     finally:
         run.unsubscribe(queue)
+
+
+@app.websocket("/ws/tail")
+async def ws_tail(
+    ws: WebSocket, cwd: str, session_id: str | None = None, from_start: bool = True
+) -> None:
+    """Follow a session running in the terminal by tailing its transcript.
+
+    This is how the agent panel watches live work now that Run launches an
+    interactive `claude` in the pty rather than a headless subprocess.
+    """
+    await ws.accept()
+    try:
+        await tail_session(ws, cwd, session_id=session_id, from_start=from_start)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    except Exception as exc:  # never let one bad tail take the server down
+        try:
+            await ws.send_json(events.make("error", text=f"tail failed: {exc}"))
+        except RuntimeError:
+            pass
+
+
+@app.get("/api/transcripts/latest")
+def latest_transcript(cwd: str) -> dict:
+    """Newest transcript for a repo — used to jump to a just-started session."""
+    p = newest_transcript(cwd)
+    return {"cwd": cwd, "session_id": p.stem if p else None, "path": str(p) if p else None}
 
 
 @app.websocket("/ws/replay/{session_id}")
