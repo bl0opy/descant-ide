@@ -98,3 +98,5 @@ cd app && npm run start:nobackend
 ```
 
 Regenerate fixtures with `python3 fixtures/generate.py` (deterministic).
+
+Run the tests with `cd backend && python3 -m tests.test_descant`.

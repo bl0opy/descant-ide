@@ -181,7 +181,35 @@ class Builder:
             toolUseResult={"stdout": result, "stderr": "", "interrupted": False, "isImage": False},
         )
 
+    def _reconcile_output_tokens(self) -> None:
+        """Make each request's ``output_tokens`` match what it actually emitted.
+
+        The inspector treats output tokens as ground truth for the
+        assistant-side rows, so a fixture with invented output counts would make
+        its own report look wrong.  Assistant lines within a request share one
+        usage object, so setting it once per request is enough.
+        """
+        by_request: dict[str, list[dict]] = {}
+        for line in self.lines:
+            if line.get("type") != "assistant":
+                continue
+            by_request.setdefault(line["requestId"], []).append(line)
+
+        for lines in by_request.values():
+            total = 0
+            thinking = 0
+            for line in lines:
+                for block in line["message"]["content"]:
+                    n = est(json.dumps(block), dense=block.get("type") != "text")
+                    total += n
+                    if block.get("type") == "thinking":
+                        thinking += n
+            usage = lines[0]["message"]["usage"]  # shared object
+            usage["output_tokens"] = total
+            usage["output_tokens_details"]["thinking_tokens"] = thinking
+
     def finish(self) -> str:
+        self._reconcile_output_tokens()
         self.lines.append(
             {
                 "type": "last-prompt",
@@ -510,7 +538,102 @@ def make_descant_stalled() -> Builder:
     return b
 
 
+def make_harbor_migration() -> Builder:
+    """A long, expensive session.
+
+    The interesting cases for a context inspector are the big ones -- a session
+    that has been running for hours and is closing in on its window. Without one
+    of these in the fixtures the tool looks like it has nothing to say.
+    """
+    b = Builder(
+        "/Users/ayan/code/harbor", "chore/ts-strict", datetime(2026, 8, 19, 13, 20, tzinfo=timezone.utc)
+    )
+    b.user(
+        "Turn on TypeScript strict mode across the whole repo and fix every error it "
+        "surfaces. Work file by file, run the typechecker as you go, and don't change "
+        "runtime behaviour."
+    )
+    b.attachment("skill_listing", SKILL_LISTING)
+    b.attachment("system_reminder", SYS_REMINDER)
+    b.begin_request()
+    b.thinking(
+        "Whole-repo strict mode is a long grind. The right order is: flip the flag, get "
+        "the full error list, then fix by directory so the count only ever goes down."
+    )
+    b.say("Flipping the flag first to see the true size of this.")
+    b.tool(
+        "Edit",
+        {
+            "file_path": "/Users/ayan/code/harbor/tsconfig.json",
+            "old_string": '"strict": false',
+            "new_string": '"strict": true',
+        },
+        "The file /Users/ayan/code/harbor/tsconfig.json has been updated.",
+    )
+
+    modules = [
+        "router", "middleware/auth", "middleware/cors", "util/body", "util/time",
+        "telemetry", "ingest", "storage/pg", "storage/redis", "queue/worker",
+        "queue/scheduler", "config", "errors", "server",
+    ]
+    remaining = 214
+    for i, mod in enumerate(modules):
+        errs = max(2, remaining // (len(modules) - i))
+        remaining -= errs
+        b.begin_request()
+        if i % 4 == 0:
+            b.thinking(
+                f"{remaining} errors left after {mod}. Most are implicit-any on callback "
+                "params, which are mechanical. The nullable ones need real thought."
+            )
+        b.tool(
+            "Read",
+            {"file_path": f"/Users/ayan/code/harbor/src/{mod}.ts"},
+            "\n".join(
+                f"{n + 1:6}\t{line}"
+                for n, line in enumerate(
+                    (FILE_BLOB.split("\n") * 3)[: 30 + (i * 7) % 40]
+                )
+            ),
+        )
+        b.tool(
+            "Edit",
+            {
+                "file_path": f"/Users/ayan/code/harbor/src/{mod}.ts",
+                "old_string": f"export function handle{i}(req, res) {{",
+                "new_string": f"export function handle{i}(req: Request, res: Response): void {{",
+            },
+            f"The file /Users/ayan/code/harbor/src/{mod}.ts has been updated.",
+        )
+        b.tool(
+            "Bash",
+            {"command": "npx tsc --noEmit", "description": f"Typecheck after {mod}"},
+            f"src/{mod}.ts:12:18 - error TS7006: Parameter 'req' implicitly has an 'any' type.\n"
+            * min(6, errs)
+            + f"\nFound {remaining} errors in {max(1, len(modules) - i - 1)} files.",
+            is_error=remaining > 0,
+        )
+        if i % 3 == 2:
+            b.attachment("system_reminder", SYS_REMINDER)
+
+    b.begin_request()
+    b.tool(
+        "Bash",
+        {"command": "npx tsc --noEmit && npm test", "description": "Final check"},
+        "Found 0 errors.\n\n Test Files  12 passed (12)\n      Tests  184 passed (184)",
+    )
+    b.say(
+        "Strict mode is on and the repo typechecks clean — 214 errors down to zero across "
+        "14 modules, with all 184 tests still passing. The bulk were implicit-any callback "
+        "params; the ones worth reviewing are in `storage/pg.ts`, where four columns were "
+        "typed non-null but the schema allows NULL. I widened those types rather than "
+        "asserting, so nothing changes at runtime."
+    )
+    return b
+
+
 BUILDERS = [
+    make_harbor_migration,
     make_harbor_auth,
     make_harbor_flaky,
     make_tidepool_backfill,
