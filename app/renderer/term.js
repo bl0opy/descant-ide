@@ -6,8 +6,10 @@ window.Term = (() => {
   // which land on window.  They must load *before* Monaco's AMD loader defines
   // `define.amd`, or they register as anonymous AMD modules and never appear
   // here.  index.html keeps that order.
+  // xterm spreads its exports onto globalThis, so `Terminal` is the class.
+  // addon-fit assigns its whole module namespace, so the class is one level in.
   const Terminal = window.Terminal || null;
-  const FitAddon = window.FitAddon || null;
+  const FitAddon = window.FitAddon?.FitAddon || window.FitAddon || null;
   const loadError = Terminal
     ? FitAddon
       ? null
