@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 
 from . import mcp, skills, tokens
@@ -157,10 +158,103 @@ async def convert_mcp_to_skill(repo_path: str, name: str, disable_after: bool = 
     return result
 
 
-def write_mined_skill(repo_path: str, slug: str, skill_md: str) -> dict:
-    """Materialise a mined skill proposal into the repo."""
-    safe = "".join(c for c in slug if c.isalnum() or c in "-_") or "mined-skill"
-    path = Path(repo_path).expanduser() / ".claude" / "skills" / safe / "SKILL.md"
+# --------------------------------------------------------------------------
+# skills: writing, promoting, sharing
+# --------------------------------------------------------------------------
+#
+# A mined workflow is only worth capturing if the next agent can find it, and
+# where it is written decides which agents those are:
+#
+# * ``repo``   -> ``<repo>/.claude/skills/`` — this project's agents only.
+# * ``user``   -> ``~/.claude/skills/``      — every agent on this machine.
+#
+# The second is what "keep it organised agent to agent" actually means: a
+# workflow discovered in one repo stops being that repo's private lore.
+
+SKILL_SCOPES = ("repo", "user")
+
+
+def safe_slug(slug: str) -> str:
+    cleaned = "".join(c if c.isalnum() or c in "-_" else "-" for c in (slug or "").lower())
+    return cleaned.strip("-") or "mined-skill"
+
+
+def skills_root(scope: str, repo_path: str | None = None) -> Path:
+    if scope == "user":
+        return Path.home() / ".claude" / "skills"
+    if scope == "repo":
+        if not repo_path:
+            raise ValueError("repo scope needs a repo path")
+        return Path(repo_path).expanduser() / ".claude" / "skills"
+    raise ValueError(f"scope must be one of {SKILL_SCOPES}")
+
+
+def write_mined_skill(
+    repo_path: str,
+    slug: str,
+    skill_md: str,
+    scope: str = "repo",
+    overwrite: bool = False,
+) -> dict:
+    """Materialise a mined skill proposal at the chosen scope."""
+    safe = safe_slug(slug)
+    path = skills_root(scope, repo_path) / safe / "SKILL.md"
+    existed = path.exists()
+    if existed and not overwrite:
+        raise FileExistsError(
+            f"a skill named {safe!r} already exists at {path} — save under a "
+            "different name, or confirm the overwrite"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(skill_md, encoding="utf-8")
-    return {"slug": safe, "path": str(path)}
+    return {
+        "slug": safe,
+        "scope": scope,
+        "path": str(path),
+        "overwritten": existed,
+        "available_to": "every repo on this machine" if scope == "user" else Path(repo_path).name,
+    }
+
+
+def copy_skill(source_path: str, scope: str, repo_path: str | None = None,
+               slug: str | None = None, overwrite: bool = False) -> dict:
+    """Copy an existing skill directory to another scope or repo.
+
+    Copies the whole directory, not just ``SKILL.md`` — a skill that shells out
+    to a script it ships with is useless without the script.
+    """
+    src = Path(source_path).expanduser()
+    if src.name == "SKILL.md":
+        src = src.parent
+    if not (src / "SKILL.md").is_file():
+        raise ValueError(f"{src} is not a skill directory")
+
+    dest = skills_root(scope, repo_path) / safe_slug(slug or src.name)
+    if dest.resolve() == src.resolve():
+        raise ValueError("source and destination are the same skill")
+    existed = dest.exists()
+    if existed and not overwrite:
+        raise FileExistsError(f"{dest} already exists — confirm the overwrite to replace it")
+    if existed:
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+    return {
+        "slug": dest.name,
+        "scope": scope,
+        "path": str(dest),
+        "from": str(src),
+        "overwritten": existed,
+    }
+
+
+def delete_skill(path: str) -> dict:
+    """Remove a skill directory. Only ever inside a ``.claude/skills`` tree."""
+    target = Path(path).expanduser()
+    if target.name == "SKILL.md":
+        target = target.parent
+    if "skills" not in target.parts or ".claude" not in target.parts:
+        raise ValueError(f"refusing to delete {target}: not inside a .claude/skills directory")
+    if not (target / "SKILL.md").is_file():
+        raise ValueError(f"{target} is not a skill directory")
+    shutil.rmtree(target)
+    return {"deleted": str(target)}

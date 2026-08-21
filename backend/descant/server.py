@@ -426,6 +426,45 @@ async def convert(body: ConvertBody) -> dict:
         raise HTTPException(400, str(exc))
 
 
+class SaveMcpBody(BaseModel):
+    repo: str
+    name: str
+    config: dict
+    scope: str = "local"
+
+
+@app.post("/api/loadout/mcp/test")
+async def test_mcp(body: SaveMcpBody) -> dict:
+    """Probe a candidate server without saving it, so its cost is known first."""
+    try:
+        return await mcp.probe_config(body.name, body.config, body.repo)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/loadout/mcp/save")
+def save_mcp(body: SaveMcpBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
+    try:
+        return mcp.save_server(body.repo, body.name, body.config, scope=body.scope)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class DeleteMcpBody(BaseModel):
+    repo: str
+    name: str
+
+
+@app.post("/api/loadout/mcp/delete")
+def delete_mcp(body: DeleteMcpBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
+    try:
+        return mcp.delete_server(body.repo, body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.get("/api/mining")
 def get_mining(repo: str | None = None, limit: int = 20) -> dict:
     """Repeated tool sequences worth turning into skills."""
@@ -436,11 +475,60 @@ class AcceptBody(BaseModel):
     repo: str
     slug: str
     skill_md: str
+    scope: str = "repo"
+    overwrite: bool = False
 
 
 @app.post("/api/mining/accept")
 def accept_mined(body: AcceptBody) -> dict:
-    return loadout.write_mined_skill(body.repo, body.slug, body.skill_md)
+    try:
+        return loadout.write_mined_skill(
+            body.repo, body.slug, body.skill_md, scope=body.scope, overwrite=body.overwrite
+        )
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class CopySkillBody(BaseModel):
+    source_path: str
+    scope: str = "user"
+    repo: str | None = None
+    slug: str | None = None
+    overwrite: bool = False
+
+
+@app.post("/api/skills/copy")
+def copy_skill(body: CopySkillBody) -> dict:
+    """Share a skill: promote it to every repo, or hand it to one other repo."""
+    try:
+        return loadout.copy_skill(
+            body.source_path,
+            body.scope,
+            repo_path=body.repo,
+            slug=body.slug,
+            overwrite=body.overwrite,
+        )
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/repos")
+def list_repos() -> dict:
+    """Repos Descant knows about — the targets a skill can be copied into."""
+    seen: dict[str, dict] = {}
+    for sess in CACHE.all():
+        if not sess.repo_path or sess.repo_path in seen:
+            continue
+        seen[sess.repo_path] = {
+            "path": sess.repo_path,
+            "name": Path(sess.repo_path).name,
+            "exists": Path(sess.repo_path).is_dir(),
+        }
+    return {"repos": sorted(seen.values(), key=lambda r: r["name"].lower())}
 
 
 @app.get("/api/library")

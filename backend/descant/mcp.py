@@ -457,3 +457,174 @@ def write_skill(server: McpServer, dest_dir: str) -> dict:
             p.chmod(0o755)
         written.append(str(p))
     return {"slug": rendered["slug"], "written": written, **conversion_savings(server)}
+
+
+# --------------------------------------------------------------------------
+# saving: defining a server for one repo
+# --------------------------------------------------------------------------
+#
+# Discovery reads from two places, so saving has to choose between them, and the
+# choice is not cosmetic:
+#
+# * ``project`` -> ``<repo>/.mcp.json``, the checked-in file the whole team gets.
+# * ``local``   -> ``~/.claude.json`` under this project, private to this machine.
+#
+# ``local`` is the default precisely because it is the one that cannot surprise
+# a collaborator. Anything carrying a credential belongs there.
+
+SCOPES = ("local", "project")
+
+
+def _write_json_atomic(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".descant-tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def normalise_config(config: dict) -> dict:
+    """Accept what a human types and return what Claude Code expects.
+
+    A command pasted as one string is the common case (``uvx some-server --flag``)
+    and splitting it here means the form does not have to make the user think
+    about argv.
+    """
+    cfg = {k: v for k, v in (config or {}).items() if v not in (None, "", [], {})}
+
+    if cfg.get("url"):
+        cfg.setdefault("type", "http")
+        cfg.pop("command", None)
+        cfg.pop("args", None)
+        return cfg
+
+    command = (cfg.get("command") or "").strip()
+    args = cfg.get("args") or []
+    if isinstance(args, str):
+        args = [a for a in args.split() if a]
+    if command and not args and " " in command:
+        parts = command.split()
+        command, args = parts[0], parts[1:]
+    if not command:
+        raise ValueError("an MCP server needs either a command or a url")
+
+    cfg["command"] = command
+    if args:
+        cfg["args"] = list(args)
+    else:
+        cfg.pop("args", None)
+    env = cfg.get("env") or {}
+    if not isinstance(env, dict):
+        raise ValueError("env must be an object of NAME -> value")
+    if env:
+        cfg["env"] = {str(k): str(v) for k, v in env.items()}
+    else:
+        cfg.pop("env", None)
+    cfg.pop("type", None)
+    return cfg
+
+
+def validate_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("a server needs a name")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        raise ValueError("names may use letters, digits, dot, dash and underscore only")
+    return name
+
+
+def save_server(repo_path: str, name: str, config: dict, scope: str = "local") -> dict:
+    """Define (or redefine) an MCP server for one repo."""
+    if scope not in SCOPES:
+        raise ValueError(f"scope must be one of {SCOPES}")
+    name = validate_name(name)
+    cfg = normalise_config(config)
+    repo = Path(repo_path).expanduser()
+    if not repo.is_dir():
+        raise ValueError(f"{repo} is not a directory on this machine")
+
+    if scope == "project":
+        path = repo / ".mcp.json"
+        data = _read_json(path)
+        data.setdefault("mcpServers", {})[name] = cfg
+        _write_json_atomic(path, data)
+        # A .mcp.json server is opt-in per project, so a save that did not also
+        # enable it would appear to do nothing.
+        _set_mcpjson_enabled(repo, name, True)
+    else:
+        path = Path.home() / ".claude.json"
+        data = _read_json(path)
+        entry = data.setdefault("projects", {}).setdefault(str(repo), {})
+        entry.setdefault("mcpServers", {})[name] = cfg
+        # A previous detach must not silently outlive the redefinition.
+        entry["disabledMcpjsonServers"] = [
+            n for n in (entry.get("disabledMcpjsonServers") or []) if n != name
+        ]
+        _write_json_atomic(path, data)
+
+    return {"name": name, "scope": scope, "config": cfg, "written": str(path)}
+
+
+def _set_mcpjson_enabled(repo: Path, name: str, enabled: bool) -> None:
+    path = Path.home() / ".claude.json"
+    data = _read_json(path)
+    entry = data.setdefault("projects", {}).setdefault(str(repo), {})
+    enabled_list = [n for n in (entry.get("enabledMcpjsonServers") or []) if n != name]
+    disabled_list = [n for n in (entry.get("disabledMcpjsonServers") or []) if n != name]
+    (enabled_list if enabled else disabled_list).append(name)
+    entry["enabledMcpjsonServers"] = enabled_list
+    entry["disabledMcpjsonServers"] = disabled_list
+    _write_json_atomic(path, data)
+
+
+def delete_server(repo_path: str, name: str) -> dict:
+    """Remove a server definition from wherever this repo defines it.
+
+    Global servers in ``~/.claude.json`` are left alone — they belong to every
+    repo, so deleting one here would be a surprise. Detaching is the right verb
+    for those, and the toggle already does it.
+    """
+    repo = Path(repo_path).expanduser()
+    removed: list[str] = []
+
+    project_file = repo / ".mcp.json"
+    data = _read_json(project_file)
+    if name in (data.get("mcpServers") or {}):
+        del data["mcpServers"][name]
+        _write_json_atomic(project_file, data)
+        removed.append(str(project_file))
+
+    home_path = Path.home() / ".claude.json"
+    home = _read_json(home_path)
+    entry = (home.get("projects") or {}).get(str(repo)) or {}
+    if name in (entry.get("mcpServers") or {}):
+        del entry["mcpServers"][name]
+        removed.append(str(home_path))
+    if entry:
+        entry["enabledMcpjsonServers"] = [
+            n for n in (entry.get("enabledMcpjsonServers") or []) if n != name
+        ]
+        entry["disabledMcpjsonServers"] = [
+            n for n in (entry.get("disabledMcpjsonServers") or []) if n != name
+        ]
+        home.setdefault("projects", {})[str(repo)] = entry
+        _write_json_atomic(home_path, home)
+
+    if not removed:
+        raise ValueError(
+            f"{name!r} is not defined for this repo — it may be a global server, "
+            "which you can detach but not delete from here"
+        )
+    return {"name": name, "removed_from": removed}
+
+
+async def probe_config(name: str, config: dict, cwd: str, timeout: float = PROBE_TIMEOUT) -> dict:
+    """Spawn a candidate server and report what it exposes, without saving it.
+
+    This is the whole argument for a form instead of hand-edited JSON: you find
+    out what the server costs you *before* it is attached to anything.
+    """
+    server = McpServer(name=validate_name(name), config=normalise_config(config), source="draft")
+    await probe(server, cwd, timeout=timeout)
+    out = server.to_dict()
+    out["ok"] = server.probed
+    return out
