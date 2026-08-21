@@ -106,8 +106,65 @@ async def get(repo_path: str, probe: bool = True) -> dict:
 # --------------------------------------------------------------------------
 
 
+#: Where a detached local-scope server's definition waits. See ``set_mcp_enabled``.
+PARKED_DIR = Path.home() / ".descant" / "parked"
+
+
+def _parked_path(repo_path: str) -> Path:
+    from . import proxy  # one slugging rule for both, and proxy owns it
+
+    return PARKED_DIR / f"{proxy._slug(repo_path)}.json"
+
+
+def _park(repo_path: str, name: str, config: dict) -> None:
+    path = _parked_path(repo_path)
+    data = _read_json(path)
+    data[name] = config
+    _write_json(path, data)
+
+
+def _unpark(repo_path: str, name: str) -> dict | None:
+    path = _parked_path(repo_path)
+    data = _read_json(path)
+    config = data.pop(name, None)
+    if config is not None:
+        _write_json(path, data)
+    return config
+
+
 def set_mcp_enabled(repo_path: str, name: str, enabled: bool) -> dict:
+    """Attach or detach one server.
+
+    Two mechanisms, because Claude Code has two. ``disabledMcpjsonServers`` is
+    exactly what its name says -- it governs servers declared in a ``.mcp.json``
+    -- and a **local-scope** server, defined under this project in
+    ``~/.claude.json``, ignores it completely: listed as disabled, it still
+    starts. Verified against ``claude mcp list``, which kept reporting a
+    "detached" server as connected.
+
+    So for those the only honest detach is to take the definition out, and the
+    only safe way to do that is to keep it. Detaching parks the config under
+    ``~/.descant/parked/`` and attaching puts it back verbatim. Descant owns
+    that file, rather than an unknown key inside Claude Code's config that a
+    future version would be within its rights to drop.
+    """
     home_path, data, entry = _project_entry(repo_path)
+    local_servers = entry.get("mcpServers") or {}
+
+    if enabled and name not in local_servers:
+        restored = _unpark(repo_path, name)
+        if restored is not None:
+            entry.setdefault("mcpServers", {})[name] = restored
+            _write_json(home_path, data)
+            return {"name": name, "enabled": True, "restored": True,
+                    "written": str(home_path)}
+    elif not enabled and name in local_servers:
+        _park(repo_path, name, local_servers[name])
+        del entry["mcpServers"][name]
+        _write_json(home_path, data)
+        return {"name": name, "enabled": False, "parked": True,
+                "written": str(home_path)}
+
     enabled_list = list(entry.get("enabledMcpjsonServers") or [])
     disabled_list = list(entry.get("disabledMcpjsonServers") or [])
 

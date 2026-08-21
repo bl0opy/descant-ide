@@ -94,6 +94,7 @@ def _blank(repo_path: str) -> dict:
         "active": DEFAULT_GROUP,
         "groups": {},
         "index": {},
+        "index_configs": {},
         "detached": [],
     }
 
@@ -165,6 +166,12 @@ async def refresh_index(repo_path: str, cfg: dict | None = None) -> dict:
         elif s.probe_error:
             errors[s.name] = s.probe_error
     cfg["index"] = index
+    # Keep each server's launch config alongside its tools. Installing *parks*
+    # a local-scope server -- its definition leaves Claude Code's config
+    # entirely, because that is the only detach Claude Code honours -- so live
+    # discovery alone would leave the proxy unable to start the very servers it
+    # fronts. Refresh always runs before install, so this captures them first.
+    cfg["index_configs"] = {s.name: s.config for s in servers if s.config}
     save_config(repo_path, cfg)
     return {"servers": len(index), "tools": sum(len(v) for v in index.values()),
             "unmeasured": errors}

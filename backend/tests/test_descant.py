@@ -948,6 +948,54 @@ def test_proxy_savings_count_its_own_overhead():
             _restore_home(old)
 
 
+def test_a_parked_server_is_still_startable_by_the_proxy():
+    """Detaching a local-scope server *removes* its definition, not a flag.
+
+    Claude Code ignores disabledMcpjsonServers for a server defined under the
+    project in ~/.claude.json -- `claude mcp list` kept reporting a "detached"
+    one as connected -- so the only detach it honours is deleting the entry.
+    Which means live discovery can no longer find it, and the proxy would be
+    fronting servers it cannot start. The index captures each launch config
+    before install parks anything; this is the test that it survives a reload.
+    """
+    import asyncio
+
+    from descant import loadout, proxy
+
+    with tempfile.TemporaryDirectory() as td:
+        old = _temp_home(td)
+        try:
+            fixture = FIXTURES.parent / "mcp" / "weather_server.py"
+            repo = str(Path(td) / "repo")
+            Path(repo).mkdir()
+            from descant import mcp as mcp_mod
+
+            mcp_mod.save_server(repo, "weather", {"command": "python3",
+                                                  "args": [str(fixture)]}, scope="local")
+            asyncio.run(proxy.install(repo))
+
+            live = {s.name for s in mcp_mod.discover(repo)}
+            check("the parked server is gone from Claude Code's config",
+                  "weather" not in live, str(live))
+            check("and its config was kept", "weather" in
+                  (proxy.load_config(repo).get("index_configs") or {}))
+
+            p = proxy.Proxy(repo)
+            try:
+                check("so the proxy can still resolve it", "weather" in p.configs)
+                out = p.call("call_tool", {"tool": "weather__get_current_weather",
+                                           "arguments": {"location": "Austin"}})
+                check("and still start it", not out.get("isError"), str(out))
+            finally:
+                p.close()
+
+            loadout.set_mcp_enabled(repo, "weather", True)
+            back = {s.name for s in mcp_mod.discover(repo)}
+            check("attaching restores the definition verbatim", "weather" in back)
+        finally:
+            _restore_home(old)
+
+
 def test_proxy_uninstall_reattaches_only_what_it_detached():
     """Installing detaches servers. Putting back more than that is destructive.
 
