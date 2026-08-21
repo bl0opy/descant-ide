@@ -58,6 +58,9 @@ function startBackend() {
       ...process.env,
       DESCANT_PROJECTS_DIR: PROJECTS_DIR,
       DESCANT_HOST: HOST,
+      // Let the backend follow us down if we die without a clean shutdown;
+      // chats own live `claude` processes that nothing else would stop.
+      DESCANT_PARENT_PID: String(process.pid),
       DESCANT_PORT: String(PORT),
       PYTHONUNBUFFERED: '1',
     },

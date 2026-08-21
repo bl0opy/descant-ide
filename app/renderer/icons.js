@@ -37,6 +37,10 @@ window.Icons = (() => {
     library: wrap(
       '<path d="M5 4h4v16H5zM11 4h4v16h-4z"/><path d="M17.5 4.6l3 15.2"/>'
     ),
+    // Chat: a speech bubble, i.e. "talk to it here".
+    chat: wrap(
+      '<path d="M20 12a8 8 0 0 1-8 8H7l-3 2v-4.2A8 8 0 1 1 20 12z"/><path d="M8.5 11h7M8.5 14h4"/>'
+    ),
     check: wrap('<path d="M4 12l5 5L20 6"/>', 16),
     spark: wrap('<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>', 16),
   };

@@ -42,7 +42,7 @@ to either for machine-readable output.
 
 ## What you're looking at
 
-- **Left rail** — sessions, file explorer, terminal toggle.
+- **Left rail** — chat, sessions, file explorer, terminal toggle.
 - **Sidebar** — sessions grouped by repo. The dot is the session's state:
   green spinner = running, grey = idle, amber = waiting on you, red = failed.
 - **Center** — tabs. Opening a session opens its context breakdown; opening a
@@ -97,8 +97,42 @@ the whole skill directory, not just `SKILL.md` — a skill that shells out to a
 script it ships with is useless without the script. Name collisions ask before
 replacing, never silently.
 
-To start a live session: pick the target repo in the dropdown at the bottom
-right, type a prompt, hit **Run** (or `Cmd/Ctrl+Enter`).
+## Chat
+
+The speech-bubble icon in the activity bar opens a **conversation with Claude
+Code inside the app** — not a terminal hosting the CLI, and not a transcript you
+watch after the fact. You type, the reply streams in, tool calls appear inline
+and expand, and the conversation keeps its context across turns.
+
+**Permissions are answered here.** When a tool needs approval the chat shows a
+card naming exactly what was asked for, with the rule it would grant:
+
+| Button | What it does |
+|---|---|
+| **Allow once** | Grants that rule for this conversation and picks up where Claude stopped. |
+| **Always allow** | Also writes the rule to `<repo>/.claude/settings.local.json`, so next session starts knowing. |
+| **Deny** | Declines; the conversation continues without it. |
+
+Rules are as narrow as the call: approving one `git status` grants
+`Bash(git status:*)`, not all of Bash. The dropdown in the chat header picks the
+posture up front — ask about everything, auto-accept edits, or plan-only (read
+and think, change nothing).
+
+Under the hood a chat is one long-lived
+`claude -p --input-format stream-json --output-format stream-json`. Because
+headless Claude Code cannot be asked "may I?" mid-stream, approving restarts the
+process with `--resume <session-id> --allowedTools <rule>` — same session, one
+more thing permitted, nothing lost but a second. `--dangerously-skip-permissions`
+is still never passed; every approval is a specific rule a person clicked.
+
+The backend follows the app down, so quitting never leaves a `claude` process
+running with no window to show for it.
+
+## Running a session in the terminal instead
+
+Chat is not the only way in. To start a live session in the real CLI: pick the
+target repo in the dropdown at the bottom right, type a prompt, hit **Run** (or
+`Cmd/Ctrl+Enter`).
 
 **Run opens `claude` in the terminal panel** — the real interactive CLI, not a
 headless subprocess. That means permission prompts appear in the terminal and
@@ -118,6 +152,7 @@ backend/descant/     the brain — everything below is a thin client over it
   transcript.py      .jsonl parsing (format notes at the top of the file)
   inspector.py       context-cost analysis
   tokens.py          token estimation + the tool-schema size table
+  chat.py            the two-way conversation: one live `claude` per chat
   tailer.py          follows a live session by watching its transcript
   runner.py          headless `claude -p` runner (kept for the HTTP API)
   server.py          FastAPI + WebSockets
@@ -125,6 +160,7 @@ backend/descant/     the brain — everything below is a thin client over it
 app/
   main.js            Electron main: supervises the backend, owns node-pty
   renderer/theme.css EVERY colour and spacing value in the app
+  renderer/chat.js   the chat view — streaming, and the approval cards
   renderer/*.js      vanilla JS, no framework
 fixtures/
   generate.py        regenerates the synthetic transcripts

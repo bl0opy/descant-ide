@@ -529,6 +529,88 @@ def test_skill_scope_decides_which_agents_get_it():
             Path.home = real_home  # type: ignore[assignment]
 
 
+def test_permission_rules_are_narrow():
+    """Approving one call must not hand over the whole tool."""
+    from descant.chat import _permission_rule
+
+    check("bash scoped to the command", _permission_rule("Bash", {"command": "rm -rf /tmp/x"}) == "Bash(rm:*)")
+    check(
+        "subcommand kept where it is the useful unit",
+        _permission_rule("Bash", {"command": "git commit -m 'x'"}) == "Bash(git commit:*)",
+    )
+    check(
+        "leading env assignments ignored",
+        _permission_rule("Bash", {"command": "FOO=1 pytest -x"}) == "Bash(pytest:*)",
+    )
+    check("unquotable input does not explode", _permission_rule("Bash", {"command": "echo 'unclosed"}) .startswith("Bash"))
+    check("non-bash tools scope to the tool", _permission_rule("Write", {"file_path": "/a"}) == "Write")
+
+
+def test_permission_request_borrows_args_from_the_tool_call():
+    """The denial names the tool but not what it wanted -- correlate it back.
+
+    Without this a blocked ``rm -rf`` and a blocked ``git status`` would offer
+    the same approval, and that approval would be all of Bash.
+    """
+    import asyncio
+
+    from descant import chat as chat_mod
+
+    c = chat_mod.Chat(chat_id="t", cwd=".", session_id="s")
+
+    async def drive():
+        await c._handle(
+            events.make(
+                "tool_use",
+                tool_name="Bash",
+                tool_input={"command": "rm -rf build/"},
+                tool_use_id="tu_1",
+            )
+        )
+        await c._handle(
+            events.make(
+                "permission", subtype="denied", tool_name="Bash", tool_use_id="tu_1", is_error=True
+            )
+        )
+
+    asyncio.run(drive())
+    pending = c.pending["tu_1"]
+    check("the blocked call's arguments are recovered", pending["tool_input"] == {"command": "rm -rf build/"})
+    check("so the offered rule is specific", pending["rule"] == "Bash(rm:*)")
+    check("and the chat knows it is waiting on a human", c.status == chat_mod.NEEDS_INPUT)
+
+
+def test_chat_argv_resumes_rather_than_restarting():
+    """Approval restarts the process; the conversation must survive that."""
+    from descant import chat as chat_mod
+
+    c = chat_mod.Chat(chat_id="t", cwd=".", session_id="abc-123")
+    first = c._argv()
+    check("first launch names the session", "--session-id" in first and "abc-123" in first)
+    check("no permissions are granted up front", "--allowedTools" not in first)
+    check("never skips permission checks", "--dangerously-skip-permissions" not in first)
+
+    c._started_once = True
+    c.allowed_tools = ["Bash(git status:*)"]
+    second = c._argv()
+    check("later launches rejoin the same session", "--resume" in second and "abc-123" in second)
+    check("and only ever name it once", "--session-id" not in second)
+    check("carrying the approvals forward", "Bash(git status:*)" in second)
+
+
+def test_remembered_rules_land_where_claude_code_reads_them():
+    from descant.chat import remember_rule
+
+    with tempfile.TemporaryDirectory() as td:
+        remember_rule(td, "Bash(pytest:*)")
+        remember_rule(td, "Write")
+        remember_rule(td, "Bash(pytest:*)")  # twice on purpose
+        data = json.loads((Path(td) / ".claude" / "settings.local.json").read_text())
+        allow = data["permissions"]["allow"]
+        check("rules persist for the next session", "Write" in allow)
+        check("and are not duplicated", allow.count("Bash(pytest:*)") == 1)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -236,6 +236,7 @@
   function closeTab(key) {
     const i = S.tabs.findIndex((t) => t.key === key);
     if (i < 0) return;
+    if (key.startsWith('chat:')) disposeChat(key.slice(5));
     S.tabs.splice(i, 1);
     activateTab(S.tabs.length ? S.tabs[Math.max(0, i - 1)].key : null);
   }
@@ -636,6 +637,7 @@
   const ACTIVITIES = [
     { id: 'sessions', icon: 'sessions', title: 'Sessions', onSelect: showSessions },
     { id: 'files', icon: 'files', title: 'Explorer', onSelect: showFiles },
+    { id: 'chat', icon: 'chat', title: 'Chat with Claude Code', onSelect: showChat },
     { id: 'loadout', icon: 'loadout', title: 'Tool loadout', onSelect: showLoadout },
     { id: 'mining', icon: 'mining', title: 'Mined workflows', onSelect: showMining },
     { id: 'library', icon: 'library', title: 'Capability library', onSelect: showLibrary },
@@ -767,6 +769,78 @@
         host.innerHTML = `<div class="inspector"><p class="muted">${err.message}</p></div>`;
       }
     });
+  }
+
+  // ======================================================================
+  // Chat — Claude Code as a conversation, not just a terminal
+  // ======================================================================
+
+  // A chat owns a websocket and a scroll position, so its DOM has to survive
+  // tab switches. Panel tabs re-render on every activation, so we keep the
+  // mounted node here and re-parent it instead of rebuilding it.
+  const CHATS = new Map(); // chat_id -> { node, handle, meta }
+
+  function disposeChat(chatId) {
+    const entry = CHATS.get(chatId);
+    if (!entry) return;
+    entry.handle.dispose();
+    CHATS.delete(chatId);
+    post(`/api/chats/${chatId}/close`, {}).catch(() => {
+      /* the backend may already be gone; nothing to salvage */
+    });
+  }
+
+  async function showChat() {
+    const repo = loadoutRepo();
+    if (!repo) {
+      toast('no repo on this machine to chat about — pick one in the dropdown', true);
+      return;
+    }
+
+    // One chat per repo unless you deliberately open another; re-selecting the
+    // icon should return you to the conversation, not start a fresh one.
+    const existing = [...CHATS.values()].find((c) => c.meta.cwd === repo);
+    if (existing) {
+      openChatTab(existing.meta);
+      return;
+    }
+
+    let chat;
+    try {
+      chat = await post('/api/chats', { repo, permission_mode: 'manual' });
+    } catch (err) {
+      toast(`could not start a chat: ${err.message}`, true);
+      return;
+    }
+
+    const node = document.createElement('div');
+    node.className = 'chat-mount';
+    const handle = window.Chat.mount(node, {
+      chat,
+      api,
+      wsUrl: (id) => `${S.api.replace(/^http/, 'ws')}/ws/chats/${id}`,
+      onDiff: openDiff,
+    });
+    CHATS.set(chat.chat_id, { node, handle, meta: chat });
+    openChatTab(chat);
+  }
+
+  function openChatTab(chat) {
+    openPanelTab(
+      'chat:' + chat.chat_id,
+      `Chat · ${chat.repo_name || chat.cwd.split('/').pop()}`,
+      (host) => {
+        const entry = CHATS.get(chat.chat_id);
+        if (!entry) {
+          host.innerHTML =
+            '<div class="inspector"><p class="muted">This chat was closed.</p></div>';
+          return;
+        }
+        host.innerHTML = '';
+        host.appendChild(entry.node);
+        entry.handle.focus();
+      }
+    );
   }
 
   async function showLibrary(query = '') {

@@ -11,19 +11,49 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from . import config, events, library, loadout, mcp, mining, skills
+from . import chat, config, events, library, loadout, mcp, mining, skills
 from .inspector import analyze
 from .runner import MANAGER
 from .tailer import newest_transcript, tail_session
 from .transcript import Session, load_all, load_session
 
-app = FastAPI(title="Descant", version="0.1.0")
+async def _exit_with_parent() -> None:
+    """Follow the app down.
+
+    Chats own live ``claude`` processes. If Electron dies without getting to
+    SIGTERM us -- a crash, a kill -9 -- nothing else would ever stop them, and an
+    orphaned agent keeps working (and spending) with no window to show for it.
+    """
+    ppid = os.environ.get("DESCANT_PARENT_PID")
+    if not ppid or not ppid.isdigit():
+        return
+    parent = int(ppid)
+    while True:
+        await asyncio.sleep(2)
+        try:
+            os.kill(parent, 0)
+        except (ProcessLookupError, PermissionError):
+            await chat.REGISTRY.close_all()
+            os._exit(0)
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Live chats own subprocesses; a server exit must not orphan them."""
+    watchdog = asyncio.create_task(_exit_with_parent())
+    yield
+    watchdog.cancel()
+    await chat.REGISTRY.close_all()
+
+
+app = FastAPI(title="Descant", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # local-only desktop app; the Electron origin is file://
@@ -540,6 +570,131 @@ async def get_library(q: str = "", limit: int = 20, probe: bool = True) -> dict:
         lib.score_query(q, limit=limit) if q else [e.to_dict() for e in lib.entries][:limit]
     )
     return {"query": q, "repos": repos, "stats": library.stats(lib), "results": entries}
+
+
+# --------------------------------------------------------------------------
+# chat: a two-way conversation, in the app rather than in the terminal
+# --------------------------------------------------------------------------
+
+
+class NewChatBody(BaseModel):
+    repo: str
+    permission_mode: str = "manual"
+    resume_session: str | None = None
+
+
+@app.post("/api/chats")
+async def new_chat(body: NewChatBody) -> dict:
+    try:
+        c = await chat.REGISTRY.create(
+            body.repo, permission_mode=body.permission_mode, resume_session=body.resume_session
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return c.meta()
+
+
+@app.get("/api/chats")
+def list_chats() -> dict:
+    return {"chats": [c.meta() for c in chat.REGISTRY.all()]}
+
+
+def _chat_or_404(chat_id: str) -> chat.Chat:
+    try:
+        return chat.REGISTRY.get(chat_id)
+    except KeyError:
+        raise HTTPException(404, f"no chat {chat_id}")
+
+
+class SendBody(BaseModel):
+    text: str
+
+
+@app.post("/api/chats/{chat_id}/send")
+async def chat_send(chat_id: str, body: SendBody) -> dict:
+    c = _chat_or_404(chat_id)
+    try:
+        await c.send(body.text)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc))
+    return c.meta()
+
+
+class PermissionBody(BaseModel):
+    tool_use_id: str
+    decision: str  # "allow" | "deny"
+    remember: bool = False
+    reason: str = ""
+
+
+@app.post("/api/chats/{chat_id}/permission")
+async def chat_permission(chat_id: str, body: PermissionBody) -> dict:
+    c = _chat_or_404(chat_id)
+    try:
+        if body.decision == "allow":
+            return await c.approve(body.tool_use_id, remember=body.remember)
+        if body.decision == "deny":
+            return await c.deny(body.tool_use_id, reason=body.reason)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    raise HTTPException(400, "decision must be 'allow' or 'deny'")
+
+
+class ModeBody(BaseModel):
+    permission_mode: str
+
+
+@app.post("/api/chats/{chat_id}/mode")
+async def chat_mode(chat_id: str, body: ModeBody) -> dict:
+    c = _chat_or_404(chat_id)
+    try:
+        return await c.set_permission_mode(body.permission_mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/chats/{chat_id}/interrupt")
+async def chat_interrupt(chat_id: str) -> dict:
+    return await _chat_or_404(chat_id).interrupt()
+
+
+@app.post("/api/chats/{chat_id}/close")
+async def chat_close(chat_id: str) -> dict:
+    await chat.REGISTRY.close(chat_id)
+    return {"closed": chat_id}
+
+
+@app.websocket("/ws/chats/{chat_id}")
+async def ws_chat(ws: WebSocket, chat_id: str) -> None:
+    """Follow one conversation. Replays what was said, then streams the rest."""
+    await ws.accept()
+    try:
+        c = chat.REGISTRY.get(chat_id)
+    except KeyError:
+        await ws.send_json({"kind": "error", "text": f"no chat {chat_id}"})
+        await ws.close()
+        return
+
+    queue = c.subscribe()
+    try:
+        await ws.send_json({"kind": "meta", "chat": c.meta()})
+        for ev in list(c.history):
+            await ws.send_json({"event": ev, "meta": c.meta()})
+        while True:
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=20.0)
+            except asyncio.TimeoutError:
+                await ws.send_json({"kind": "ping"})
+                continue
+            await ws.send_json(payload)
+    except WebSocketDisconnect:
+        pass
+    except RuntimeError:
+        pass
+    finally:
+        c.unsubscribe(queue)
+
+
 
 
 def main() -> None:
