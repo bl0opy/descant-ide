@@ -62,7 +62,7 @@ to either for machine-readable output.
 
 | Panel | What it does |
 |---|---|
-| **Tool loadout** | Every MCP server and skill attached to the repo, with what each costs **on every turn**. Toggle them off; convert an MCP server into a thin skill (the preview shows the saving before anything is written). Add servers here too — see below. |
+| **Tool loadout** | Every MCP server and skill attached to the repo, with what each costs **on every turn**. Toggle them off; pick which individual tools stay resident (**Tool residency**, below); convert an MCP server into a thin skill (the preview shows the saving before anything is written). Add servers here too — see below. |
 | **Mined workflows** | Repeated tool sequences found in your transcript history, with the real commands and a ready `SKILL.md`. Sequences seen across *multiple sessions* rank highest. Name the skill and pick who gets it before writing. |
 | **Capability library** | Search every skill and MCP tool across all repos. Ranking is BM25 + synonyms — lexical, not embeddings; the panel says so. |
 | **Session inspector** | Click any session: where its context went, split by system prompt / tool schemas / MCP schemas / skill listings / conversation. |
@@ -87,6 +87,39 @@ argv for you. Two things the form does that hand-editing JSON does not:
 
 **Remove** deletes a definition this repo owns. Global servers can be detached
 with the toggle but not deleted from here — they belong to every repo.
+
+### Tool residency: one proxy instead of every server
+
+**Tool loadout → Tool residency.** Claude Code's only lever is per *server*, but
+cost is never spread evenly across a server: it is three fat schemas out of
+twenty tools. Descant closes that gap with a proxy — one stdio server called
+`descant` that fronts every real server for the repo and exposes only the tools
+in the **active group**.
+
+Nothing becomes unavailable. Alongside the group it always exposes two tools:
+
+- `find_tool` — search every tool the repo has, group or not, and get its real
+  input schema back;
+- `call_tool` — invoke any of them by name.
+
+So a tool outside the group costs nothing until a task reaches for it, and then
+one round trip instead of a permanent seat in every request. A group is a
+residency list, not a restriction.
+
+**Install** registers the proxy and detaches the servers it fronts — leaving
+them attached would cost *more*, because you would carry the schemas and the
+proxy. **Uninstall** puts back exactly what it took away, by name, so a server
+you had switched off yourself stays off.
+
+One thing worth knowing, because it surprised this build: `disabledMcpjsonServers`
+governs `.mcp.json` servers only. A **local-scope** server — one defined under
+your project in `~/.claude.json` — ignores it entirely and starts anyway
+(`claude mcp list` will happily call a "detached" server connected). So Descant
+detaches those by *parking* the definition in `~/.descant/parked/` and putting it
+back verbatim when you re-attach.
+
+Groups, the tool index and parked definitions all live under `~/.descant/`.
+Nothing here is written into the repo.
 
 ### Keeping skills organised, agent to agent
 

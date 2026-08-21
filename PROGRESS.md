@@ -25,13 +25,14 @@ and shows 7 sessions across 3 repos.
 | 6 | Monaco editor + diff | ✅ verified — diff opens from agent edits |
 | 7 | Multiple concurrent sessions | ✅ verified — 3 simultaneous runs, correct routing |
 | 8 | MCP → skill converter | ✅ built, and measured against a real MCP server |
+| 9 | MCP proxy (per-tool residency) | ✅ verified against the real `claude` CLI |
 
 Items 1–7 are done. Every "verified" above means I drove the real app headless
 and looked at the result, not that the code compiles. Item 8 was left untouched
 rather than half-built.
 
 Beyond the original list, all five differentiating features are built (see
-**The five differentiating features** below), plus **multi-turn conversations**
+**The five differentiating features** below), plus a sixth — the **MCP proxy**, plus **multi-turn conversations**
 (`--resume`), **Run-in-terminal** with transcript tailing, **~90-language editor
 support**, and a **74-check test suite**
 (`cd backend && python3 -m tests.test_descant`).
@@ -182,6 +183,40 @@ Swapping in a real embedding backend means replacing `score_query()` and
 nothing else — the index, the API and the UI are all agnostic to how a query
 becomes scores. That is the one place I would spend the next hour.
 
+
+### 6. Tool residency — the MCP proxy ✅
+
+`backend/descant/proxy.py`. The other four features work *around* Claude Code's
+per-server switch. This one replaces it.
+
+One stdio server registers as `descant`, fronts every real server for the repo,
+and exposes only the active group's tools plus `find_tool` and `call_tool`.
+Everything outside the group is still reachable — one round trip when a task
+needs it, instead of a permanent seat in every request. That is why the panel
+calls a group a *residency list* and never says "disabled".
+
+**Verified against the real CLI, not just the fixture.** `claude mcp list`
+reports the proxy connected, a live `claude -p` session sees exactly three
+`mcp__descant__` tools with one tool in the group (1 chosen + 2 meta), and a
+session asked for `severe weather alerts` found the hidden tool through
+`find_tool` and got real content back through `call_tool`.
+
+Two things that only showed up because it was driven for real:
+
+1. **`disabledMcpjsonServers` does not disable a local-scope server.** The name
+   is literal: it governs `.mcp.json` servers. A server defined under the project
+   in `~/.claude.json` ignores the list and starts anyway — `claude mcp list`
+   kept reporting a "detached" server as connected. Detaching one now *parks* its
+   definition in `~/.descant/parked/` and re-attaching restores it verbatim. This
+   was a live bug in the existing loadout toggle, not just in the proxy.
+2. **Parking removes it from live discovery**, so the proxy could find a hidden
+   tool and then fail to start its server. The index now captures each launch
+   config before install parks anything. Both have regression tests.
+
+The honest limit: the two meta tools cost ~260 tokens that never go away, so
+proxying a small server is a loss and the panel's number says so — the fixture
+weather server (4 tools, 702 tokens) only saves once you actually leave tools
+out. The trade is built for the forty-tool server, which is the one that hurts.
 
 ---
 
