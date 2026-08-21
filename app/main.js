@@ -197,6 +197,30 @@ try {
 
 const terminals = new Map();
 
+// node-pty's failures are famously opaque: a spawn-helper without its executable
+// bit reports nothing but "posix_spawnp failed.", which sends people hunting
+// through shell config for a problem that is one chmod away.  Name it instead.
+function explainSpawnFailure(err) {
+  const raw = String((err && err.message) || err);
+  if (!/posix_spawnp?\s+failed/i.test(raw)) return raw;
+  const helper = path.join(
+    __dirname,
+    'node_modules',
+    'node-pty',
+    'prebuilds',
+    `${process.platform}-${process.arch}`,
+    'spawn-helper'
+  );
+  try {
+    if (fs.existsSync(helper) && !(fs.statSync(helper).mode & 0o111)) {
+      return `${raw} node-pty's spawn-helper is not executable — run \`npm run fix-pty\` (or chmod +x ${helper}).`;
+    }
+  } catch {
+    /* fall through to the raw message */
+  }
+  return `${raw} (shell: ${process.env.SHELL || 'unset'})`;
+}
+
 ipcMain.handle('pty:spawn', (event, { id, cwd, cols, rows }) => {
   if (!pty) return { ok: false, error: `node-pty unavailable: ${ptyLoadError}` };
   if (terminals.has(id)) return { ok: true, reused: true };
@@ -212,7 +236,7 @@ ipcMain.handle('pty:spawn', (event, { id, cwd, cols, rows }) => {
       env: { ...process.env, TERM: 'xterm-256color' },
     });
   } catch (err) {
-    return { ok: false, error: String(err.message || err) };
+    return { ok: false, error: explainSpawnFailure(err) };
   }
   proc.onData((data) => {
     if (win && !win.isDestroyed()) win.webContents.send('pty:data', { id, data });

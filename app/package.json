@@ -6,7 +6,9 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "start:nobackend": "DESCANT_NO_SPAWN=1 electron ."
+    "start:nobackend": "DESCANT_NO_SPAWN=1 electron .",
+    "postinstall": "node scripts/fix-pty-perms.js",
+    "fix-pty": "node scripts/fix-pty-perms.js"
   },
   "devDependencies": {
     "electron": "^32.2.0"
