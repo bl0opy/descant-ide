@@ -1827,21 +1827,18 @@ body.resizing .xterm {
   width: 30px;
   height: 30px;
   margin-left: var(--space-2);
-  border: 1px solid var(--success);
-  border-radius: var(--radius-sm);
   color: var(--success);
   -webkit-app-region: no-drag;
   flex: 0 0 auto;
 }
 
+/* No frame — the arrow itself is the button. Hover just brightens it. */
 #btn-run-file:hover:not(:disabled) {
-  background: var(--success);
-  color: var(--bg-app);
+  opacity: 0.72;
 }
 
 #btn-run-file:disabled {
   color: var(--fg-faint);
-  border-color: var(--border-strong);
   opacity: 0.45;
   cursor: default;
 }
