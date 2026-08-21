@@ -1,136 +1,73 @@
-// The chat view: Claude Code as a conversation in the app.
+// The agent panel, as a conversation.
 //
-// The terminal panel runs the real CLI and the agent panel replays transcripts;
-// neither lets you *talk* to Claude from inside Descant. This does. It owns one
-// live chat (a persistent `claude -p` on the backend), streams the reply as it
-// arrives, and — the part that makes it a chat rather than a viewer — lets you
-// answer permission requests in place.
+// The panel used to be a viewer: it tailed a transcript and you answered
+// permission prompts somewhere else. This turns it into the place you actually
+// talk to Claude Code — you type in the composer, the reply streams into the
+// same log, and tool approvals are decided right there in the panel.
+//
+// This module owns no DOM of its own. It binds to the elements the panel
+// already has, so the layout stays in index.html where the rest of the app's
+// layout lives.
 window.Chat = (() => {
-  const { esc, renderEvent } = window.Views;
-
-  const el = (html) => {
-    const d = document.createElement('div');
-    d.innerHTML = html.trim();
-    return d.firstElementChild;
-  };
-
-  const MODES = [
-    ['manual', 'Ask me — every tool needs a click'],
-    ['acceptEdits', 'Auto-accept edits — still asks for the rest'],
-    ['plan', 'Plan only — read and think, change nothing'],
-  ];
+  const { renderEvent } = window.Views;
 
   const STATUS_LABEL = {
-    starting: 'starting…',
-    running: 'working…',
     idle: 'ready',
+    running: 'working…',
     needs_input: 'waiting on you',
+    starting: 'starting…',
     failed: 'failed',
     closed: 'closed',
   };
 
   /**
-   * Mount a chat into *host*.
+   * Drive one conversation through the panel's elements.
    *
-   * `api` is the caller's fetch wrapper, so this file does no URL building and
-   * no state juggling beyond the conversation itself.
+   * Returns a handle: the caller decides when a chat is shown, replaced, or
+   * torn down, because the same panel also has to show read-only transcripts.
    */
-  function mount(host, { chat, api, wsUrl, onDiff }) {
-    host.innerHTML = '';
-    const view = el(`
-      <div class="chat">
-        <div class="chat-head">
-          <div class="chat-title">
-            <strong>${esc(chat.repo_name || chat.cwd)}</strong>
-            <span class="chat-cwd">${esc(chat.cwd)}</span>
-          </div>
-          <div class="chat-head-right">
-            <select class="chat-mode" title="How tool permissions are handled">
-              ${MODES.map(
-                ([v, label]) =>
-                  `<option value="${v}" ${
-                    v === chat.permission_mode ? 'selected' : ''
-                  }>${esc(label)}</option>`
-              ).join('')}
-            </select>
-            <span class="chat-status"></span>
-          </div>
-        </div>
-        <div class="chat-log"></div>
-        <div class="chat-composer">
-          <textarea class="chat-input" rows="3"
-                    placeholder="Ask Claude Code to do something in this repo…   (${
-                      navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'
-                    }+Enter to send)"></textarea>
-          <div class="chat-composer-row">
-            <span class="chat-cost"></span>
-            <button class="btn secondary small chat-stop">Stop</button>
-            <button class="btn small chat-send">Send</button>
-          </div>
-        </div>
-      </div>`);
-    host.appendChild(view);
-
-    const log = view.querySelector('.chat-log');
-    const input = view.querySelector('.chat-input');
-    const statusEl = view.querySelector('.chat-status');
-    const costEl = view.querySelector('.chat-cost');
-    const sendBtn = view.querySelector('.chat-send');
-    const stopBtn = view.querySelector('.chat-stop');
-    const modeSel = view.querySelector('.chat-mode');
-
+  function attach({ chat, els, api, wsUrl, onDiff, onMeta }) {
     let meta = chat;
     let ws = null;
-    let closed = false;
-    // Consecutive assistant chunks belong to one message; keeping the element
-    // around lets the reply grow in place instead of stuttering into fragments.
+    let disposed = false;
     let openAssistant = null;
+    let lastInitSession = null;
+    // Our own copy, so the panel can leave a chat and come back to it.
+    const history = [];
 
-    const atBottom = () =>
-      log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+    const log = els.log;
 
-    const stick = (wasAtBottom) => {
-      if (wasAtBottom) log.scrollTop = log.scrollHeight;
+    const atBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 100;
+    const stick = (was) => {
+      if (was) log.scrollTop = log.scrollHeight;
     };
 
     function setMeta(m) {
-      if (!m) return;
+      if (!m || disposed) return;
       meta = m;
-      statusEl.textContent = STATUS_LABEL[m.status] || m.status;
-      statusEl.className = 'chat-status s-' + m.status;
-      costEl.textContent = m.cost_usd ? `$${m.cost_usd.toFixed(3)}` : '';
-      const busy = m.status === 'running' || m.status === 'starting';
-      sendBtn.disabled = busy;
-      stopBtn.disabled = !busy;
-      if (m.permission_mode && modeSel.value !== m.permission_mode) {
-        modeSel.value = m.permission_mode;
-      }
+      onMeta?.(m);
     }
 
-    let lastInitSession = null;
-
     function append(ev) {
-      const wasAtBottom = atBottom();
+      const was = atBottom();
 
       // Every turn re-inits the underlying process, and every approval restarts
       // it. Announcing "session started" each time is noise in a conversation —
-      // say it once, and only again if the session itself actually changed.
+      // say it once, and again only if the session itself really changed.
       if (ev.kind === 'status' && ev.subtype === 'init') {
         const sid = ev.meta?.session_id || null;
         if (lastInitSession !== null && sid === lastInitSession) return;
         lastInitSession = sid;
       }
 
-      if (ev.kind === 'assistant_text') {
-        // Grow the message in place.
-        if (openAssistant) {
-          openAssistant.textContent += ev.text;
-          stick(wasAtBottom);
-          return;
-        }
-      } else if (ev.kind !== 'system') {
-        openAssistant = null;
+      // Consecutive assistant chunks are one message; growing it in place keeps
+      // the reply from stuttering into fragments.
+      if (ev.kind === 'assistant_text' && openAssistant) {
+        openAssistant.textContent += ev.text;
+        stick(was);
+        return;
       }
+      if (ev.kind !== 'assistant_text' && ev.kind !== 'system') openAssistant = null;
 
       const node = renderEvent(ev, {
         container: log,
@@ -139,23 +76,19 @@ window.Chat = (() => {
           const res = await api(`/api/chats/${meta.chat_id}/permission`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              tool_use_id: pev.tool_use_id,
-              decision,
-              remember,
-            }),
+            body: JSON.stringify({ tool_use_id: pev.tool_use_id, decision, remember }),
           });
           setMeta(res.meta || res);
         },
       });
       if (!node) {
-        stick(wasAtBottom);
+        stick(was);
         return;
       }
       if (ev.kind === 'assistant_text') openAssistant = node;
       if (ev.kind === 'user_text') node.classList.add('chat-mine');
       log.appendChild(node);
-      stick(wasAtBottom);
+      stick(was);
     }
 
     function connect() {
@@ -163,32 +96,22 @@ window.Chat = (() => {
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
         if (msg.kind === 'ping') return;
-        if (msg.kind === 'meta') {
-          setMeta(msg.chat);
-          return;
-        }
-        if (msg.kind === 'error') {
-          append({ kind: 'error', text: msg.text, is_error: true });
-          return;
-        }
+        if (msg.kind === 'meta') return setMeta(msg.chat);
+        if (msg.kind === 'error') return record({ kind: 'error', text: msg.text, is_error: true });
         if (msg.event) {
-          append(msg.event);
+          record(msg.event);
           setMeta(msg.meta);
         }
       };
       ws.onclose = () => {
-        if (closed) return;
-        // The backend restarts the process on every approval; the socket itself
-        // survives that, so a close here means something else went wrong.
-        setTimeout(() => !closed && connect(), 1200);
+        if (disposed) return;
+        setTimeout(() => !disposed && connect(), 1200);
       };
     }
 
-    async function send() {
-      const text = input.value.trim();
+    async function send(text) {
+      text = (text || '').trim();
       if (!text) return;
-      input.value = '';
-      sendBtn.disabled = true;
       try {
         setMeta(
           await api(`/api/chats/${meta.chat_id}/send`, {
@@ -198,48 +121,63 @@ window.Chat = (() => {
           })
         );
       } catch (err) {
-        append({ kind: 'error', text: err.message, is_error: true });
-        input.value = text;
-        sendBtn.disabled = false;
+        record({ kind: 'error', text: err.message, is_error: true });
+        throw err;
       }
     }
 
-    sendBtn.addEventListener('click', send);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        send();
-      }
-    });
-    stopBtn.addEventListener('click', async () => {
+    async function interrupt() {
       setMeta(await api(`/api/chats/${meta.chat_id}/interrupt`, { method: 'POST' }));
-    });
-    modeSel.addEventListener('change', async () => {
+    }
+
+    async function setMode(mode) {
       setMeta(
         await api(`/api/chats/${meta.chat_id}/mode`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ permission_mode: modeSel.value }),
+          body: JSON.stringify({ permission_mode: mode }),
         })
       );
-    });
+    }
 
-    setMeta(chat);
+    /** Take an event in: remember it, then draw it. */
+    function record(ev) {
+      history.push(ev);
+      if (history.length > 3000) history.shift();
+      append(ev);
+    }
+
+    /** Redraw the whole conversation — used when the panel comes back to it.
+     *  Draws from history without re-recording, so returning to a chat twice
+     *  does not double its log. */
+    function repaint() {
+      log.innerHTML = '';
+      openAssistant = null;
+      lastInitSession = null;
+      for (const ev of history) append(ev);
+    }
+
     connect();
-    setTimeout(() => input.focus(), 30);
 
     return {
+      get meta() {
+        return meta;
+      },
+      send,
+      interrupt,
+      setMode,
+      repaint,
+      statusLabel: () => STATUS_LABEL[meta.status] || meta.status,
       dispose() {
-        closed = true;
+        disposed = true;
         try {
           ws && ws.close();
         } catch {
           /* already gone */
         }
       },
-      focus: () => input.focus(),
     };
   }
 
-  return { mount };
+  return { attach, STATUS_LABEL };
 })();

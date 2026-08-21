@@ -27,6 +27,7 @@
           <div class="sidebar-header">
             <span id="sidebar-title">Sessions</span>
             <span class="spacer"></span>
+            <button id="btn-new-session" title="Start a new session">New</button>
             <button id="btn-refresh" title="Reload transcripts">Reload</button>
           </div>
           <div class="sidebar-scroll" id="sidebar-scroll"></div>
@@ -74,19 +75,30 @@
             <i class="dot idle" id="agent-dot"></i>
             <span class="title" id="agent-title">Agent</span>
             <span class="meta" id="agent-meta"></span>
+            <button class="linkish" id="btn-back-to-chat" style="display: none">
+              Back to chat
+            </button>
+            <select id="chat-mode" title="How tool permissions are handled">
+              <option value="manual">Ask me</option>
+              <option value="acceptEdits">Auto-accept edits</option>
+              <option value="plan">Plan only</option>
+            </select>
           </div>
           <div id="agent-log"></div>
           <div class="composer">
             <textarea
               id="composer-input"
               rows="2"
-              placeholder="Ask Claude Code to do something in this repo…"
+              placeholder="Message Claude Code…"
             ></textarea>
             <div class="composer-row">
-              <select id="composer-target" title="Repo the live run executes in"></select>
+              <select id="composer-target" title="Repo this conversation runs in"></select>
               <span class="hint" id="composer-hint"></span>
+              <button class="btn secondary" id="btn-run-terminal" title="Open the terminal and run this as a shell command">
+                Run
+              </button>
               <button class="btn secondary" id="btn-stop" style="display: none">Stop</button>
-              <button class="btn" id="btn-send">Run</button>
+              <button class="btn" id="btn-send">Send</button>
             </div>
           </div>
         </aside>

@@ -106,6 +106,9 @@ class _Cache:
         sessions.sort(key=lambda s: s.last_activity.timestamp() if s.last_activity else 0, reverse=True)
         return sessions
 
+    def forget(self, path: str) -> None:
+        self._by_path.pop(path, None)
+
     def one(self, session_id: str) -> Session | None:
         for s in self.all():
             if s.session_id == session_id or s.session_id.startswith(session_id):
@@ -695,6 +698,59 @@ async def ws_chat(ws: WebSocket, chat_id: str) -> None:
         c.unsubscribe(queue)
 
 
+
+
+# --------------------------------------------------------------------------
+# managing the session list
+# --------------------------------------------------------------------------
+
+
+class NewSessionBody(BaseModel):
+    repo: str
+
+
+@app.post("/api/sessions/new")
+async def new_session(body: NewSessionBody) -> dict:
+    """Start a fresh conversation for a repo.
+
+    A session is a chat: Claude Code writes the transcript once the first turn
+    lands, so what this really creates is somewhere to type. It shows up in the
+    sidebar as soon as it has said anything.
+    """
+    try:
+        c = await chat.REGISTRY.create(body.repo)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return c.meta()
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str) -> dict:
+    """Delete a session's transcript.
+
+    This removes the file Claude Code wrote, which is the only record of the
+    conversation — there is no undo, so the UI asks first. We refuse anything
+    that is not a ``.jsonl`` under a configured projects directory, so a bad id
+    can never turn into an arbitrary unlink.
+    """
+    sess = CACHE.one(session_id)
+    if sess is None:
+        raise HTTPException(404, f"no session {session_id}")
+
+    path = Path(sess.path).resolve()
+    roots = [r.resolve() for r in config.projects_dirs()]
+    if path.suffix != ".jsonl" or not any(path.is_relative_to(root) for root in roots):
+        raise HTTPException(400, f"refusing to delete {path}: not a transcript we manage")
+
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise HTTPException(400, f"could not delete: {exc}")
+
+    CACHE.forget(str(path))
+    return {"deleted": sess.session_id, "path": str(path), "title": sess.title}
 
 
 def main() -> None:

@@ -22,6 +22,8 @@
     activeView: 'sessions',
     panelOpen: false,
     fileCache: new Map(),
+    panelMode: 'chat',  // 'chat' = live conversation, 'session' = read-only transcript
+    chatCwd: null,      // which repo's chat the panel is showing
   };
 
   const $ = (id) => document.getElementById(id);
@@ -147,15 +149,25 @@
         <span class="label">${esc(it.label)}</span>
         <span class="sub">${esc(
           it.tokens != null ? fmtTokens(it.tokens) : it.sub || ''
-        )}</span>`;
-      row.addEventListener('click', () =>
-        it.type === 'live'
+        )}</span>
+        ${
+          it.type === 'session'
+            ? `<button class="row-delete" title="Delete this session's transcript">${window.Icons.close}</button>`
+            : ''
+        }`;
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.row-delete')) {
+          e.stopPropagation();
+          deleteSession(it.id, it.label);
+          return;
+        }
+        return it.type === 'live'
           ? followRepo(
               S.live.find((r) => (r.sessionId || r.cwd) === it.id).cwd,
               S.live.find((r) => (r.sessionId || r.cwd) === it.id).sessionId
             )
-          : openSession(it.id)
-      );
+          : openSession(it.id);
+      });
       list.appendChild(row);
     }
     wrap.appendChild(list);
@@ -285,6 +297,7 @@
 
   async function openSession(sessionId) {
     S.selected = { type: 'session', id: sessionId };
+    S.panelMode = 'session';
     renderSidebar();
     closeWs();
     try {
@@ -296,6 +309,11 @@
         status: 'idle',
       });
       renderLog($('agent-log'), data.events, { onDiff: openDiff });
+      // The panel is showing history now, not a conversation — say so, and
+      // leave an obvious way back to the live one.
+      $('btn-back-to-chat').style.display = S.chatCwd ? '' : 'none';
+      $('btn-send').disabled = false;
+      $('btn-stop').style.display = 'none';
       renderTargets();
       $('titlebar-context').textContent = `${data.repo_name} — ${data.git_branch || 'no branch'}`;
       $('status-context').textContent = `context ${fmtTokens(
@@ -317,71 +335,6 @@
   function updateRunControls(status) {
     $('btn-stop').style.display =
       status === 'running' || status === 'needs_input' ? '' : 'none';
-  }
-
-  // ======================================================================
-  // starting a run
-  // ======================================================================
-
-  /** Shell-quote a prompt for a single-quoted argv slot. */
-  function shQuote(s) {
-    return `'${String(s).replace(/'/g, `'\\''`)}'`;
-  }
-
-  /**
-   * Run Claude Code in the terminal, not as a headless subprocess.
-   *
-   * This is the whole point of the terminal panel: you get the real interactive
-   * CLI, which means permission prompts are answerable in place instead of just
-   * being reported after the fact. The agent panel follows along by tailing the
-   * transcript Claude Code writes, which is a better source than owning stdout —
-   * it survives Descant restarting and picks up sessions you started yourself.
-   */
-  async function startRun() {
-    const prompt = $('composer-input').value.trim();
-    if (!prompt) {
-      toast('type something for Claude to do first');
-      return;
-    }
-    const cwd = $('composer-target').value || currentRepoPath();
-    if (!cwd) {
-      toast('no runnable repo — none of these transcripts point at a path on this machine', true);
-      return;
-    }
-
-    if (!window.Term.available()) {
-      toast('terminal unavailable, so there is nowhere to run — see the console', true);
-      return;
-    }
-
-    // Continue the selected conversation when there is one to continue.
-    let resume = null;
-    if (S.selected?.type === 'live' && S.selected.cwd === cwd) resume = S.selected.sessionId;
-    else if (S.selected?.type === 'session') {
-      const repo = selectedRepo();
-      if (repo?.exists && repo.repo_path === cwd) resume = S.selected.id;
-    }
-
-    togglePanel(true);
-    const opened = await window.Term.open(cwd);
-    if (opened && opened.ok === false) {
-      toast(opened.error, true);
-      return;
-    }
-
-    const argv = ['claude'];
-    if (resume) argv.push('--resume', resume);
-    argv.push(shQuote(prompt));
-    // A freshly spawned pty has not drawn its prompt yet; typing immediately
-    // races the shell and the line can be swallowed.
-    const command = argv.join(' ');
-    setTimeout(() => {
-      if (!window.Term.send(cwd, command)) toast('terminal went away before launch', true);
-    }, opened && opened.reused ? 0 : 400);
-
-    $('composer-input').value = '';
-    // Attach the agent panel to whatever transcript this repo starts writing.
-    followRepo(cwd, resume, prompt);
   }
 
   // ======================================================================
@@ -502,14 +455,12 @@
     const target = $('composer-target').value;
     const hint = $('composer-hint');
     if (repo && repo.exists === false) {
-      hint.textContent = `${repo.repo_name} isn't on this machine — terminal will run in ${target
+      hint.textContent = `${repo.repo_name} isn't on this machine — using ${target
         .split('/')
         .pop()}`;
       hint.style.color = 'var(--warning)';
     } else {
-      hint.textContent = `runs \`claude\` in the terminal · ${
-        (target || '—').split('/').pop()
-      }`;
+      hint.textContent = `Send chats · Run shells · ${(target || '—').split('/').pop()}`;
       hint.style.color = '';
     }
   }
@@ -637,7 +588,6 @@
   const ACTIVITIES = [
     { id: 'sessions', icon: 'sessions', title: 'Sessions', onSelect: showSessions },
     { id: 'files', icon: 'files', title: 'Explorer', onSelect: showFiles },
-    { id: 'chat', icon: 'chat', title: 'Chat with Claude Code', onSelect: showChat },
     { id: 'loadout', icon: 'loadout', title: 'Tool loadout', onSelect: showLoadout },
     { id: 'mining', icon: 'mining', title: 'Mined workflows', onSelect: showMining },
     { id: 'library', icon: 'library', title: 'Capability library', onSelect: showLibrary },
@@ -771,76 +721,190 @@
     });
   }
 
-  // ======================================================================
-  // Chat — Claude Code as a conversation, not just a terminal
-  // ======================================================================
-
-  // A chat owns a websocket and a scroll position, so its DOM has to survive
-  // tab switches. Panel tabs re-render on every activation, so we keep the
-  // mounted node here and re-parent it instead of rebuilding it.
-  const CHATS = new Map(); // chat_id -> { node, handle, meta }
-
-  function disposeChat(chatId) {
-    const entry = CHATS.get(chatId);
-    if (!entry) return;
-    entry.handle.dispose();
-    CHATS.delete(chatId);
-    post(`/api/chats/${chatId}/close`, {}).catch(() => {
-      /* the backend may already be gone; nothing to salvage */
-    });
+  /**
+   * Delete a session's transcript.
+   *
+   * The transcript is the only record of the conversation, so this asks first
+   * and says what it is about to destroy.
+   */
+  async function deleteSession(sessionId, label) {
+    const what = label && label.length > 60 ? label.slice(0, 60) + '…' : label;
+    if (!confirm(`Delete this session permanently?\n\n${what}\n\nIts transcript is the only record — this cannot be undone.`)) {
+      return;
+    }
+    try {
+      const res = await api(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      toast(`deleted ${res.title ? '“' + res.title.slice(0, 40) + '”' : sessionId.slice(0, 8)}`);
+      if (S.selected?.type === 'session' && S.selected.id === sessionId) {
+        S.selected = null;
+        closeTab(`ctx:${sessionId}`);
+        if (S.chatCwd) showChat(S.chatCwd);
+      }
+      await refresh();
+    } catch (err) {
+      toast(`could not delete: ${err.message}`, true);
+    }
   }
 
-  async function showChat() {
-    const repo = loadoutRepo();
-    if (!repo) {
+  /** Start a fresh conversation, and put the panel on it. */
+  async function newSession() {
+    const cwd = $('composer-target').value || currentRepoPath();
+    if (!cwd) {
+      toast('no repo on this machine to start a session in', true);
+      return;
+    }
+    // A repo's chat is its conversation; dropping the old one starts a new one.
+    const old = CHATS.get(cwd);
+    if (old) {
+      old.dispose();
+      CHATS.delete(cwd);
+      post(`/api/chats/${old.meta.chat_id}/close`, {}).catch(() => {});
+    }
+    await showChat(cwd);
+    toast(`new session in ${cwd.split('/').pop()}`);
+  }
+
+  // ======================================================================
+  // Chat — the agent panel *is* the conversation
+  // ======================================================================
+  //
+  // The panel has two jobs and one set of elements: it shows a live chat, and
+  // it shows a read-only transcript when you open a past session. `S.panelMode`
+  // says which, so the composer knows whether Send means "talk to Claude" and
+  // the log knows whether it is safe to overwrite.
+
+  const CHATS = new Map(); // cwd -> handle
+
+  function activeChat() {
+    return S.chatCwd ? CHATS.get(S.chatCwd) : null;
+  }
+
+  /** The chat for a repo, started if this is the first time we need it. */
+  async function chatFor(cwd) {
+    const existing = CHATS.get(cwd);
+    if (existing) return existing;
+    const chat = await post('/api/chats', { repo: cwd, permission_mode: $('chat-mode').value });
+    const handle = window.Chat.attach({
+      chat,
+      els: { log: $('agent-log') },
+      api,
+      wsUrl: (id) => `${S.api.replace(/^http/, 'ws')}/ws/chats/${id}`,
+      onDiff: openDiff,
+      onMeta: (m) => {
+        // Only the chat currently on screen may drive the panel's chrome.
+        if (S.panelMode === 'chat' && S.chatCwd === m.cwd) paintChatHeader(m);
+      },
+    });
+    CHATS.set(cwd, handle);
+    return handle;
+  }
+
+  function paintChatHeader(m) {
+    setAgentHeader({
+      title: m.repo_name || m.cwd.split('/').pop(),
+      meta: window.Chat.STATUS_LABEL[m.status] || m.status,
+      status: m.status === 'running' ? 'running' : m.status === 'needs_input' ? 'needs_input' : m.status === 'failed' ? 'failed' : 'idle',
+    });
+    $('chat-mode').value = m.permission_mode;
+    const busy = m.status === 'running' || m.status === 'starting';
+    $('btn-send').disabled = busy;
+    $('btn-stop').style.display = busy ? '' : 'none';
+  }
+
+  /** Bring the live conversation for *cwd* back onto the panel. */
+  async function showChat(cwd) {
+    cwd = cwd || $('composer-target').value || currentRepoPath();
+    if (!cwd) {
       toast('no repo on this machine to chat about — pick one in the dropdown', true);
       return;
     }
-
-    // One chat per repo unless you deliberately open another; re-selecting the
-    // icon should return you to the conversation, not start a fresh one.
-    const existing = [...CHATS.values()].find((c) => c.meta.cwd === repo);
-    if (existing) {
-      openChatTab(existing.meta);
-      return;
-    }
-
-    let chat;
+    let handle;
     try {
-      chat = await post('/api/chats', { repo, permission_mode: 'manual' });
+      handle = await chatFor(cwd);
     } catch (err) {
       toast(`could not start a chat: ${err.message}`, true);
       return;
     }
-
-    const node = document.createElement('div');
-    node.className = 'chat-mount';
-    const handle = window.Chat.mount(node, {
-      chat,
-      api,
-      wsUrl: (id) => `${S.api.replace(/^http/, 'ws')}/ws/chats/${id}`,
-      onDiff: openDiff,
-    });
-    CHATS.set(chat.chat_id, { node, handle, meta: chat });
-    openChatTab(chat);
+    S.panelMode = 'chat';
+    S.chatCwd = cwd;
+    closeWs(); // stop tailing a transcript into the same log
+    if ($('composer-target').value !== cwd) $('composer-target').value = cwd;
+    handle.repaint();
+    paintChatHeader(handle.meta);
+    updateComposerHint();
+    $('btn-back-to-chat').style.display = 'none';
+    $('composer-input').focus();
   }
 
-  function openChatTab(chat) {
-    openPanelTab(
-      'chat:' + chat.chat_id,
-      `Chat · ${chat.repo_name || chat.cwd.split('/').pop()}`,
-      (host) => {
-        const entry = CHATS.get(chat.chat_id);
-        if (!entry) {
-          host.innerHTML =
-            '<div class="inspector"><p class="muted">This chat was closed.</p></div>';
-          return;
-        }
-        host.innerHTML = '';
-        host.appendChild(entry.node);
-        entry.handle.focus();
-      }
+  /** Send the composer's contents as a chat turn. */
+  async function sendChat() {
+    const text = $('composer-input').value.trim();
+    if (!text) {
+      toast('type something for Claude to do first');
+      return;
+    }
+    const cwd = $('composer-target').value || currentRepoPath();
+    if (!cwd) {
+      toast('no runnable repo — none of these transcripts point at a path on this machine', true);
+      return;
+    }
+    if (S.panelMode !== 'chat' || S.chatCwd !== cwd) await showChat(cwd);
+    const handle = activeChat();
+    if (!handle) return;
+    $('composer-input').value = '';
+    try {
+      await handle.send(text);
+    } catch {
+      $('composer-input').value = text; // give it back rather than losing it
+    }
+  }
+
+  /**
+   * Run the composer's contents in the terminal, as a shell command.
+   *
+   * Deliberately literal: what you typed is what bash gets. Send talks to
+   * Claude; Run runs a command. Keeping those two obviously different is the
+   * whole point of having both.
+   */
+  async function runInTerminal() {
+    const command = $('composer-input').value.trim();
+    if (!command) {
+      toast('type a command to run first');
+      return;
+    }
+    const cwd = $('composer-target').value || currentRepoPath();
+    if (!cwd) {
+      toast('no repo on this machine to run in', true);
+      return;
+    }
+    if (!window.Term.available()) {
+      toast('terminal unavailable — see the console', true);
+      return;
+    }
+    togglePanel(true);
+    const opened = await window.Term.open(cwd);
+    if (opened && opened.ok === false) {
+      toast(opened.error, true);
+      return;
+    }
+    // A freshly spawned pty has not drawn its prompt yet; typing immediately
+    // races the shell and the line can be swallowed.
+    setTimeout(
+      () => {
+        if (!window.Term.send(cwd, command)) toast('terminal went away before launch', true);
+      },
+      opened && opened.reused ? 0 : 400
     );
+    $('composer-input').value = '';
+  }
+
+  async function stopChat() {
+    const handle = activeChat();
+    if (S.panelMode === 'chat' && handle) {
+      await handle.interrupt();
+      return;
+    }
+    stopRun(); // a terminal session is stopped with Ctrl-C, as before
   }
 
   async function showLibrary(query = '') {
@@ -965,17 +1029,32 @@
 
     renderActivityBar();
     await refresh();
+    // The panel is a conversation by default; opening a session switches it to
+    // that session's transcript, and "Back to chat" returns.
+    showChat().catch(() => {
+      /* no repo on this machine yet — the composer says so when you type */
+    });
 
     $('btn-refresh').addEventListener('click', refresh);
-    $('btn-send').addEventListener('click', startRun);
-    $('btn-stop').addEventListener('click', stopRun);
+    $('btn-new-session').addEventListener('click', newSession);
+    $('btn-send').addEventListener('click', sendChat);
+    $('btn-run-terminal').addEventListener('click', runInTerminal);
+    $('btn-back-to-chat').addEventListener('click', () => showChat(S.chatCwd));
+    $('chat-mode').addEventListener('change', async () => {
+      const handle = activeChat();
+      if (handle) await handle.setMode($('chat-mode').value);
+    });
+    $('btn-stop').addEventListener('click', stopChat);
     $('btn-panel-close').addEventListener('click', () => togglePanel(false));
-    $('composer-target').addEventListener('change', updateComposerHint);
+    $('composer-target').addEventListener('change', () => {
+      updateComposerHint();
+      if (S.panelMode === 'chat') showChat($('composer-target').value);
+    });
 
     $('composer-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        startRun();
+        sendChat();
       }
     });
 
