@@ -24,6 +24,7 @@
     fileCache: new Map(),
     panelMode: 'chat',  // 'chat' = live conversation, 'session' = read-only transcript
     chatCwd: null,      // which repo's chat the panel is showing
+    fileRoot: null,     // repo the explorer is rooted at
   };
 
   const $ = (id) => document.getElementById(id);
@@ -476,39 +477,195 @@
   }
 
   // ======================================================================
-  // file explorer view
+  // file explorer — a real tree
   // ======================================================================
+  //
+  // It used to flatten the whole repo into one list of relative paths, which
+  // hides the structure you actually navigate by, and truncated on any big
+  // project. This expands a directory at a time, remembers what you opened, and
+  // can create and delete.
+
+  const EXPANDED = new Set(); // absolute dir paths currently open
+
+  const el = (html) => {
+    const d = document.createElement('div');
+    d.innerHTML = html.trim();
+    return d.firstElementChild;
+  };
 
   async function showFiles() {
-    const cwd = currentRepoPath();
+    // The dropdown is an explicit choice of repo, so it wins over whatever
+    // session happens to be selected.
+    const cwd = $('composer-target').value || currentRepoPath();
     const host = $('sidebar-scroll');
     $('sidebar-title').textContent = 'Explorer';
     if (!cwd) {
       host.innerHTML = `<div class="empty-state"><p>Open a session first.</p></div>`;
       return;
     }
-    host.innerHTML = `<div class="empty-state"><p>Loading ${esc(cwd)}…</p></div>`;
+    S.fileRoot = cwd;
+    host.innerHTML = `<div class="empty-state"><p>Loading ${esc(
+      cwd.split('/').pop()
+    )}…</p></div>`;
     try {
-      const data = await api(`/api/files?path=${encodeURIComponent(cwd)}`);
+      const tree = document.createElement('div');
+      tree.className = 'tree';
+      await renderDir(tree, cwd, 0);
       host.innerHTML = '';
-      if (!data.files.length) {
-        host.innerHTML = `<div class="empty-state"><p>No files under<br><code>${esc(
-          cwd
-        )}</code></p><p>The repo this transcript refers to does not exist on this machine.</p></div>`;
-        return;
-      }
-      for (const f of data.files) {
-        const row = document.createElement('div');
-        row.className = 'session-row';
-        row.title = f.rel;
-        row.innerHTML = `<span class="label">${esc(f.rel)}</span>
-          <span class="sub">${(f.size / 1024).toFixed(0)}k</span>`;
-        row.addEventListener('click', () => openFile(f.path, f.rel));
-        host.appendChild(row);
+      host.appendChild(treeToolbar(cwd));
+      host.appendChild(tree);
+      if (!tree.children.length) {
+        host.appendChild(el(`<div class="empty-state"><p>Nothing here yet.</p></div>`));
       }
     } catch (err) {
       host.innerHTML = `<div class="empty-state"><p>${esc(err.message)}</p></div>`;
     }
+  }
+
+  function treeToolbar(root) {
+    const bar = el(`
+      <div class="tree-toolbar">
+        <span class="tree-root" title="${esc(root)}">${esc(root.split('/').pop())}</span>
+        <button class="tree-act" data-act="file" title="New file">+ File</button>
+        <button class="tree-act" data-act="folder" title="New folder">+ Folder</button>
+      </div>`);
+    bar
+      .querySelector('[data-act="file"]')
+      .addEventListener('click', () => createEntry(root, false));
+    bar
+      .querySelector('[data-act="folder"]')
+      .addEventListener('click', () => createEntry(root, true));
+    return bar;
+  }
+
+  /** Render one directory's children into *container*, indented by *depth*. */
+  async function renderDir(container, dir, depth) {
+    const data = await api(`/api/files?path=${encodeURIComponent(dir)}`);
+    for (const entry of data.entries) {
+      container.appendChild(await renderEntry(entry, depth));
+    }
+    if (data.truncated) {
+      container.appendChild(
+        el(
+          `<div class="tree-note" style="padding-left:${
+            12 + depth * 12
+          }px">…too many entries to show</div>`
+        )
+      );
+    }
+  }
+
+  async function renderEntry(entry, depth) {
+    const wrap = document.createElement('div');
+    const isOpen = entry.dir && EXPANDED.has(entry.path);
+
+    const row = el(`
+      <div class="tree-row${entry.dir ? ' is-dir' : ''}" title="${esc(entry.path)}">
+        <span class="twist">${
+          entry.dir ? window.Icons[isOpen ? 'chevronDown' : 'chevronRight'] : ''
+        }</span>
+        <span class="ticon">${
+          entry.dir ? window.FileIcons.forFolder(isOpen) : window.FileIcons.forFile(entry.name)
+        }</span>
+        <span class="tname">${esc(entry.name)}</span>
+        <span class="tsize">${entry.dir ? '' : fmtBytes(entry.size)}</span>
+        <button class="row-delete" title="Delete">${window.Icons.close}</button>
+      </div>`);
+    row.style.paddingLeft = `${8 + depth * 12}px`;
+
+    const kids = document.createElement('div');
+    kids.className = 'tree-kids';
+
+    row.querySelector('.row-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteEntry(entry);
+    });
+
+    row.addEventListener('click', async () => {
+      if (!entry.dir) {
+        openFile(entry.path, entry.name);
+        return;
+      }
+      if (EXPANDED.has(entry.path)) {
+        EXPANDED.delete(entry.path);
+        kids.innerHTML = '';
+        row.querySelector('.twist').innerHTML = window.Icons.chevronRight;
+        row.querySelector('.ticon').innerHTML = window.FileIcons.forFolder(false);
+        return;
+      }
+      EXPANDED.add(entry.path);
+      row.querySelector('.twist').innerHTML = window.Icons.chevronDown;
+      row.querySelector('.ticon').innerHTML = window.FileIcons.forFolder(true);
+      try {
+        await renderDir(kids, entry.path, depth + 1);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+
+    wrap.appendChild(row);
+    wrap.appendChild(kids);
+    if (isOpen) await renderDir(kids, entry.path, depth + 1);
+    return wrap;
+  }
+
+  function fmtBytes(n) {
+    if (n == null) return '';
+    if (n < 1024) return `${n}b`;
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)}k`;
+    return `${(n / 1048576).toFixed(1)}M`;
+  }
+
+  /** Create a file or folder under *dir*. The name carries the extension. */
+  async function createEntry(dir, directory) {
+    const name = prompt(
+      directory
+        ? 'New folder name:'
+        : 'New file name (include the extension — main.py, index.html, notes.md):'
+    );
+    if (!name || !name.trim()) return;
+    try {
+      const res = await post('/api/fs/create', {
+        root: S.fileRoot,
+        path: dir === S.fileRoot ? name.trim() : `${dir}/${name.trim()}`,
+        directory,
+      });
+      toast(`created ${res.name}`);
+      if (dir !== S.fileRoot) EXPANDED.add(dir);
+      await showFiles();
+      if (!directory) openFile(res.path, res.name);
+    } catch (err) {
+      toast(`could not create: ${err.message}`, true);
+    }
+  }
+
+  async function deleteEntry(entry) {
+    const kind = entry.dir ? 'folder' : 'file';
+    if (!confirm(`Delete this ${kind}?\n\n${entry.path}\n\nThis cannot be undone.`)) return;
+    try {
+      await post('/api/fs/delete', { root: S.fileRoot, path: entry.path, recursive: false });
+    } catch (err) {
+      // A non-empty folder is a second question, not a failure.
+      if (entry.dir && /not empty/.test(err.message)) {
+        if (!confirm(`${entry.name} is not empty. Delete it and everything inside?`)) return;
+        try {
+          await post('/api/fs/delete', {
+            root: S.fileRoot,
+            path: entry.path,
+            recursive: true,
+          });
+        } catch (err2) {
+          toast(`could not delete: ${err2.message}`, true);
+          return;
+        }
+      } else {
+        toast(`could not delete: ${err.message}`, true);
+        return;
+      }
+    }
+    EXPANDED.delete(entry.path);
+    toast(`deleted ${entry.name}`);
+    await showFiles();
   }
 
   /**
@@ -1049,6 +1206,7 @@
     $('composer-target').addEventListener('change', () => {
       updateComposerHint();
       if (S.panelMode === 'chat') showChat($('composer-target').value);
+      if (S.activeView === 'files') showFiles();
     });
 
     $('composer-input').addEventListener('keydown', (e) => {

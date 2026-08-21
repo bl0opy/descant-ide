@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -227,27 +228,131 @@ async def get_context(session_id: str) -> dict:
 
 
 @app.get("/api/files")
-def list_files(path: str, limit: int = 2000) -> dict:
-    """Shallow-ish file tree for the editor panel (item 6)."""
+def list_files(path: str, limit: int = 4000) -> dict:
+    """One directory, not the whole tree.
+
+    The explorer used to flatten every file under a repo into one list of
+    relative paths, which loses the structure people actually navigate by — and
+    hits a truncation limit on any real project. This lists a single level and
+    lets the UI expand what it needs, so a big repo costs nothing until you look
+    inside it.
+    """
     root = Path(path).expanduser()
     if not root.is_dir():
         raise HTTPException(404, f"not a directory: {root}")
+
     skip = {".git", "node_modules", "__pycache__", ".venv", "dist", "build", ".next"}
-    out = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in skip and not d.startswith("."))
-        for name in sorted(filenames):
-            if name.startswith("."):
-                continue
-            full = Path(dirpath) / name
+    dirs, files = [], []
+    try:
+        entries = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    except OSError as exc:
+        raise HTTPException(400, str(exc))
+
+    for entry in entries:
+        if entry.name in skip:
+            continue
+        try:
+            is_dir = entry.is_dir()
+        except OSError:
+            continue
+        if is_dir:
+            dirs.append({"path": str(entry), "name": entry.name, "dir": True})
+        else:
             try:
-                size = full.stat().st_size
+                size = entry.stat().st_size
             except OSError:
                 continue
-            out.append({"path": str(full), "rel": str(full.relative_to(root)), "size": size})
-            if len(out) >= limit:
-                return {"root": str(root), "files": out, "truncated": True}
-    return {"root": str(root), "files": out, "truncated": False}
+            files.append(
+                {"path": str(entry), "name": entry.name, "dir": False, "size": size}
+            )
+        if len(dirs) + len(files) >= limit:
+            break
+
+    # Directories first, the convention every file tree uses.
+    return {
+        "root": str(root),
+        "parent": str(root.parent),
+        "entries": dirs + files,
+        "truncated": len(dirs) + len(files) >= limit,
+    }
+
+
+# --------------------------------------------------------------------------
+# creating and deleting files
+# --------------------------------------------------------------------------
+
+
+def _guard_path(target: str, root: str) -> Path:
+    """Resolve *target* and refuse anything that escapes *root*.
+
+    Every write path in this file goes through here. A traversal in a name
+    (``../../.ssh/authorized_keys``) has to fail closed, not merely look wrong.
+    """
+    base = Path(root).expanduser().resolve()
+    if not base.is_dir():
+        raise HTTPException(400, f"{base} is not a directory")
+    path = Path(target).expanduser()
+    if not path.is_absolute():
+        path = base / path
+    resolved = Path(os.path.normpath(str(path)))
+    if resolved != base and not resolved.is_relative_to(base):
+        raise HTTPException(400, f"refusing to touch {resolved}: outside {base}")
+    return resolved
+
+
+class CreateFileBody(BaseModel):
+    root: str
+    path: str          # relative to root, or absolute inside it
+    directory: bool = False
+    content: str = ""
+
+
+@app.post("/api/fs/create")
+def create_entry(body: CreateFileBody) -> dict:
+    """Create a file (any extension) or a folder."""
+    target = _guard_path(body.path, body.root)
+    if not target.name:
+        raise HTTPException(400, "a name is required")
+    if target.exists():
+        raise HTTPException(409, f"{target.name} already exists")
+    try:
+        if body.directory:
+            target.mkdir(parents=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body.content, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(400, f"could not create: {exc}")
+    return {"path": str(target), "name": target.name, "dir": body.directory}
+
+
+class DeleteFileBody(BaseModel):
+    root: str
+    path: str
+    recursive: bool = False
+
+
+@app.post("/api/fs/delete")
+def delete_entry(body: DeleteFileBody) -> dict:
+    """Delete a file, or a folder you have confirmed you meant."""
+    target = _guard_path(body.path, body.root)
+    base = Path(body.root).expanduser().resolve()
+    if target == base:
+        raise HTTPException(400, "refusing to delete the repo itself")
+    if not target.exists():
+        raise HTTPException(404, f"{target} does not exist")
+    try:
+        if target.is_dir():
+            if not body.recursive and any(target.iterdir()):
+                raise HTTPException(409, f"{target.name} is not empty")
+            shutil.rmtree(target) if body.recursive else target.rmdir()
+        else:
+            target.unlink()
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(400, f"could not delete: {exc}")
+    return {"deleted": str(target), "name": target.name}
 
 
 @app.get("/api/file")
