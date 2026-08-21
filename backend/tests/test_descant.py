@@ -788,6 +788,29 @@ def test_path_guard_survives_a_symlinked_root():
         check("a path under a symlinked root is accepted", resolved == (real / "a.py").resolve())
 
 
+def test_a_partially_read_file_is_flagged():
+    """Saving a truncated buffer would delete everything past the cut.
+
+    The editor can only refuse that if the read tells it what happened, so the
+    flag is the whole defence.
+    """
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        small = Path(td) / "small.py"
+        small.write_text("x" * 100)
+        whole = server.read_file(str(small))
+        check("a file that fits is not flagged", whole["truncated"] is False)
+        check("and arrives complete", len(whole["text"]) == 100)
+
+        big = Path(td) / "big.py"
+        big.write_text("y" * 5000)
+        part = server.read_file(str(big), max_bytes=1000)
+        check("a file that does not fit is flagged", part["truncated"] is True)
+        check("the real size is still reported", part["size"] == 5000)
+        check("only the prefix is returned", len(part["text"]) == 1000)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

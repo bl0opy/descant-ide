@@ -361,18 +361,41 @@ def delete_entry(body: DeleteFileBody) -> dict:
 
 
 @app.get("/api/file")
-def read_file(path: str, max_bytes: int = 512_000) -> dict:
+def read_file(path: str, max_bytes: int = 2_000_000) -> dict:
+    """Read a file for the editor.
+
+    ``truncated`` matters more than it looks: a partially-read file that the
+    editor then saves would silently delete everything past the cut. The flag
+    exists so the UI can refuse to write one back.
+    """
     p = Path(path).expanduser()
     if not p.is_file():
         raise HTTPException(404, f"not a file: {p}")
-    data = p.read_bytes()[:max_bytes]
+    size = p.stat().st_size
+    raw = p.read_bytes()
+    data = raw[:max_bytes]
+    truncated = len(raw) > len(data)
     try:
         text = data.decode("utf-8")
         binary = False
     except UnicodeDecodeError:
-        text = ""
-        binary = True
-    return {"path": str(p), "text": text, "binary": binary, "size": p.stat().st_size}
+        # A cut mid-codepoint is not evidence of a binary file, so retry on a
+        # boundary before deciding.
+        try:
+            text = data.decode("utf-8", errors="ignore")
+            raw[:1].decode("utf-8")
+            binary = False
+            truncated = True
+        except UnicodeDecodeError:
+            text = ""
+            binary = True
+    return {
+        "path": str(p),
+        "text": text,
+        "binary": binary,
+        "size": size,
+        "truncated": truncated,
+    }
 
 
 class WriteFileBody(BaseModel):

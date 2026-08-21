@@ -145,6 +145,11 @@ it. A tab with unsaved changes carries an amber dot and asks before closing.
 Saves go through a temp file in the same directory and are moved into place, so
 an interrupted write cannot leave a half-written source file behind.
 
+Each open file keeps its own live Monaco model, so switching tabs preserves the
+buffer, its undo history and its cursor — the tab bar never re-seeds the editor
+from a stale snapshot. A file too large to read in full opens read-only and
+refuses to save, because writing back a partial buffer would delete the rest.
+
 **Auto-save** is in Settings, off by default — *after a pause in typing* (with a
 configurable delay) or *when the editor loses focus*. Off is the default on
 purpose: Descant sits alongside agents reading and writing the same files, and a

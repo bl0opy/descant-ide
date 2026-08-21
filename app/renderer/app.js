@@ -26,6 +26,7 @@
     chatCwd: null,      // which repo's chat the panel is showing
     fileRoot: null,     // repo the explorer is rooted at
     openFilePath: null, // file showing in the editor, for the Run arrow
+    truncatedFiles: new Set(), // loaded partially — never safe to save back
   };
 
   const $ = (id) => document.getElementById(id);
@@ -255,6 +256,10 @@
       renderInspector($('view-inspector'), tab.payload);
     } else if (tab.view === 'editor' || tab.view === 'diff') {
       $('view-editor').classList.add('active');
+      if (tab.view === 'editor') {
+        clearTimeout(autoSaveTimer);
+        S.openFilePath = tab.payload.path;
+      }
       window.Editor.layout();
       // Monaco hosts one editor at a time, so re-open when the tab changes what
       // should be showing.
@@ -263,7 +268,9 @@
         const p =
           tab.view === 'diff'
             ? window.Editor.openDiff(tab.payload.path, tab.payload.before, tab.payload.after)
-            : window.Editor.openFile(tab.payload.path, tab.payload.text);
+            : // No text argument: the model is already loaded, and handing over a
+              // snapshot here would overwrite unsaved edits.
+              window.Editor.openFile(tab.payload.path);
         p.then(() => showLanguage(tab.payload.path)).catch((e) =>
           toast(`editor: ${e.message}`, true)
         );
@@ -274,9 +281,19 @@
   function closeTab(key) {
     const i = S.tabs.findIndex((t) => t.key === key);
     if (i < 0) return;
-    if (key.startsWith('file:')) clearTimeout(autoSaveTimer);
-    if (S.tabs[i].dirty && !confirm(`${S.tabs[i].label} has unsaved changes. Close anyway?`)) {
+    // Ask *before* anything is torn down: disposing the model first would make
+    // the dirty check say "clean" and discard the edits without a word.
+    const isFile = key.startsWith('file:');
+    const path = isFile ? key.slice(5) : null;
+    const stillDirty = isFile ? window.Editor.isPathDirty(path) : S.tabs[i].dirty;
+    if (stillDirty && !confirm(`${S.tabs[i].label} has unsaved changes. Close anyway?`)) {
       return;
+    }
+    if (isFile) {
+      clearTimeout(autoSaveTimer);
+      window.Editor.closeFile(path);
+      S.truncatedFiles.delete(path);
+      if (S.openFilePath === path) S.openFilePath = null;
     }
     if (key.startsWith('chat:')) disposeChat(key.slice(5));
     S.tabs.splice(i, 1);
@@ -515,16 +532,19 @@
    * surprise. When it is on, the debounce restarts on every keystroke so a save
    * lands in a pause, not mid-word.
    */
-  function scheduleAutoSave() {
+  function scheduleAutoSave(path) {
     const cfg = window.Settings.get();
     clearTimeout(autoSaveTimer);
-    if (cfg.autoSave !== 'delay') return;
-    autoSaveTimer = setTimeout(() => saveOpenFile({ quiet: true }), cfg.autoSaveDelay);
+    if (cfg.autoSave !== 'delay' || !path) return;
+    autoSaveTimer = setTimeout(
+      () => saveOpenFile({ quiet: true, path }),
+      cfg.autoSaveDelay
+    );
   }
 
   function autoSaveOnBlur() {
     if (window.Settings.get().autoSave !== 'blur') return;
-    saveOpenFile({ quiet: true });
+    saveOpenFile({ quiet: true, path: window.Editor.current() });
   }
 
   /** Mark a tab as having unsaved changes, without redrawing the whole bar. */
@@ -541,24 +561,36 @@
    * Monaco was already editable, but nothing ever saved — you could type into a
    * file all day and lose it on the next tab switch. This is that missing half.
    */
-  async function saveOpenFile({ quiet = false } = {}) {
-    const path = S.openFilePath;
-    if (!path || !window.Editor.current()) {
+  async function saveOpenFile({ quiet = false, path = null } = {}) {
+    // The path is decided by the caller and re-checked here. An autosave
+    // scheduled for one file must never land on whatever is open when the timer
+    // happens to fire — that is how a buffer ends up written into another
+    // file's path during a tab switch.
+    path = path || S.openFilePath;
+    if (!path) {
       if (!quiet) toast('no file open to save');
       return;
     }
-    if (!window.Editor.isDirty()) {
+    if (S.truncatedFiles.has(path)) {
+      toast('refusing to save: this file was too large to load in full', true);
+      return;
+    }
+    if (!window.Editor.isPathDirty(path)) {
       if (!quiet) toast('no changes to save');
       return;
     }
-    const text = window.Editor.currentText();
+    const text = window.Editor.textFor(path);
+    if (text == null) {
+      if (!quiet) toast('nothing to save');
+      return;
+    }
     try {
       await api('/api/file', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ path, text, root: S.fileRoot || '' }),
       });
-      window.Editor.markSaved(text);
+      window.Editor.markSaved(text, path);
       markTabDirty(`file:${path}`, false);
       // An autosave that announced itself every second would be noise.
       if (!quiet) toast(`saved ${path.split('/').pop()}`);
@@ -998,21 +1030,42 @@
         toast('binary file — not opening');
         return;
       }
+      if (data.truncated) {
+        S.truncatedFiles.add(path);
+        toast(
+          `${path.split('/').pop()} is too large to load in full — opened read-only`,
+          true
+        );
+      } else {
+        S.truncatedFiles.delete(path);
+      }
+      // Load the buffer *before* opening the tab. openTab activates the tab
+      // synchronously, and that activation also asks the editor to show this
+      // path — if the model does not exist yet, the two race and the file can
+      // open blank.
+      clearTimeout(autoSaveTimer);
+      S.openFilePath = path;
+      await window.Editor.openFile(path, data.text, {
+        readOnly: Boolean(data.truncated),
+        onRun: runOpenFile,
+        onSave: saveOpenFile,
+        onDirty: (dirty) => {
+          // `Editor.current()` rather than the captured `path`: these handlers
+          // outlive the open that installed them, because the editor is reused.
+          const active = window.Editor.current();
+          markTabDirty(`file:${active}`, dirty);
+          if (dirty) scheduleAutoSave(active);
+        },
+        onBlur: autoSaveOnBlur,
+      });
       openTab({
         key: `file:${path}`,
         label: label || path.split('/').pop(),
         view: 'editor',
-        payload: { path, text: data.text },
-      });
-      S.openFilePath = path;
-      await window.Editor.openFile(path, data.text, {
-        onRun: runOpenFile,
-        onSave: saveOpenFile,
-        onDirty: (dirty) => {
-          markTabDirty(`file:${path}`, dirty);
-          if (dirty) scheduleAutoSave();
-        },
-        onBlur: autoSaveOnBlur,
+        // Only the path: the buffer lives in Monaco's model from here on. A
+        // text snapshot in the tab would go stale the moment you typed, and
+        // re-seeding from it on a tab switch is how edits used to disappear.
+        payload: { path },
       });
       refreshRunnable(path);
     } catch (err) {

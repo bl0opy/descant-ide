@@ -9,6 +9,7 @@ window.Editor = (() => {
   let diffEditor = null;
   let host = null;
   let currentPath = null;
+  let fontSize = 12;
 
   function load() {
     if (monaco) return Promise.resolve(monaco);
@@ -128,72 +129,155 @@ window.Editor = (() => {
     return monaco ? monaco.languages.getLanguages().length : 0;
   }
 
-  let savedText = '';
-  let fontSize = 12;
+  // One Monaco model per file, kept for the life of the tab.
+  //
+  // This is load-bearing, not an optimisation. The editor used to be rebuilt
+  // from a text snapshot every time you switched tabs, which meant switching
+  // away and back silently reverted the buffer to whatever it said when it was
+  // first opened — and with autosave on, that stale text then got written to
+  // disk. Holding the live model means the buffer, its undo history and its
+  // cursor survive a tab switch, and "what is on screen" is always the same
+  // object the save reads from.
+  const files = new Map(); // path -> {model, savedText, viewState}
+  let handlers = {};
+  let wired = false;
 
   function init(hostEl) {
     host = hostEl;
   }
 
-  function disposeAll() {
-    if (editor) { editor.dispose(); editor = null; }
-    if (diffEditor) { diffEditor.dispose(); diffEditor = null; }
+  function disposeEditors() {
+    if (editor) {
+      editor.dispose();
+      editor = null;
+      wired = false;
+    }
+    if (diffEditor) {
+      diffEditor.dispose();
+      diffEditor = null;
+    }
     if (host) host.innerHTML = '';
   }
 
-  async function openFile(path, text, handlers = {}) {
+  /** Kept for callers that mean "tear the view down"; models are untouched. */
+  function disposeAll() {
+    stashViewState();
+    disposeEditors();
+  }
+
+  function stashViewState() {
+    if (!editor || !currentPath) return;
+    const entry = files.get(currentPath);
+    if (entry) entry.viewState = editor.saveViewState();
+  }
+
+  async function openFile(path, text, nextHandlers) {
     await load();
-    disposeAll();
+    // Handlers come from whoever opened the file; a tab switch re-opens without
+    // them, and dropping them would quietly disable dirty tracking and autosave.
+    if (nextHandlers) handlers = nextHandlers;
+
+    stashViewState();
+    if (diffEditor) {
+      diffEditor.dispose();
+      diffEditor = null;
+      if (host) host.innerHTML = '';
+    }
+
+    let entry = files.get(path);
+    if (!entry) {
+      // No content and nothing loaded yet: this is a tab activation racing the
+      // read that will supply the text. Creating a model from `undefined` here
+      // would open the file empty — and an empty buffer that autosaves is a
+      // deleted file.
+      if (text == null) return editor;
+      entry = {
+        model: monaco.editor.createModel(text, langFor(path)),
+        savedText: text,
+        viewState: null,
+      };
+      files.set(path, entry);
+    }
     currentPath = path;
-    savedText = text;
-    editor = monaco.editor.create(host, {
-      value: text,
-      language: langFor(path),
-      theme: 'descant',
-      readOnly: false,
-      automaticLayout: true,
-      minimap: { enabled: true },
-      fontSize,
-      fontFamily: getComputedStyle(document.documentElement)
-        .getPropertyValue('--font-mono')
-        .trim(),
-      scrollBeyondLastLine: false,
-      renderWhitespace: 'selection',
-    });
 
-    // Monaco consumes keydown before it reaches the window, so app shortcuts
-    // have to be registered *with* it or they simply never fire while the
-    // cursor is in a file — which is exactly when you want them.
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
-      handlers.onRun?.()
-    );
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
-      handlers.onSave?.()
-    );
+    const readOnly = Boolean(handlers.readOnly);
+    if (!editor) {
+      editor = monaco.editor.create(host, {
+        model: entry.model,
+        theme: 'descant',
+        readOnly,
+        automaticLayout: true,
+        minimap: { enabled: true },
+        fontSize,
+        fontFamily: getComputedStyle(document.documentElement)
+          .getPropertyValue('--font-mono')
+          .trim(),
+        scrollBeyondLastLine: false,
+        renderWhitespace: 'selection',
+      });
+    } else {
+      editor.setModel(entry.model);
+      editor.updateOptions({ readOnly });
+    }
 
-    editor.onDidChangeModelContent(() => handlers.onDirty?.(isDirty()));
-    editor.onDidBlurEditorText(() => handlers.onBlur?.());
+    if (!wired) {
+      // Bound to the editor, not the model, so they survive model swaps.
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => handlers.onRun?.());
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => handlers.onSave?.());
+      editor.onDidChangeModelContent(() => handlers.onDirty?.(isDirty()));
+      editor.onDidBlurEditorText(() => handlers.onBlur?.());
+      wired = true;
+    }
+
+    if (entry.viewState) editor.restoreViewState(entry.viewState);
     return editor;
   }
 
   function isDirty() {
-    return Boolean(editor) && editor.getValue() !== savedText;
+    const entry = files.get(currentPath);
+    return Boolean(entry) && entry.model.getValue() !== entry.savedText;
   }
 
   /** The buffer as it stands, for whoever is doing the writing. */
   function currentText() {
-    return editor ? editor.getValue() : null;
+    const entry = files.get(currentPath);
+    return entry ? entry.model.getValue() : null;
   }
 
   /** Called after a successful write, so the dirty check has a new baseline. */
-  function markSaved(text) {
-    savedText = text;
+  function markSaved(text, path = currentPath) {
+    const entry = files.get(path);
+    if (entry) entry.savedText = text;
+  }
+
+  /** Forget a file entirely — only when its tab closes. */
+  function closeFile(path) {
+    const entry = files.get(path);
+    if (!entry) return;
+    if (currentPath === path && editor) {
+      editor.setModel(null);
+      currentPath = null;
+    }
+    entry.model.dispose();
+    files.delete(path);
+  }
+
+  /** Whether *path* has unsaved edits, even if it is not the visible tab. */
+  function isPathDirty(path) {
+    const entry = files.get(path);
+    return Boolean(entry) && entry.model.getValue() !== entry.savedText;
+  }
+
+  function textFor(path) {
+    const entry = files.get(path);
+    return entry ? entry.model.getValue() : null;
   }
 
   /** Side-by-side diff — used to show what an agent edit changed. */
   async function openDiff(path, before, after) {
     await load();
-    disposeAll();
+    stashViewState();
+    disposeEditors();
     // Namespaced so a file tab and a diff tab for the same path are distinct.
     currentPath = `diff:${path}`;
     const lang = langFor(path);
@@ -239,5 +323,8 @@ window.Editor = (() => {
     currentText,
     isDirty,
     markSaved,
+    closeFile,
+    isPathDirty,
+    textFor,
   };
 })();
