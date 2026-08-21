@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from . import chat, config, events, library, loadout, mcp, mining, skills
+from . import chat, config, events, library, loadout, mcp, mining, proxy, skills
 from .inspector import analyze
 from .runner import MANAGER
 from .tailer import newest_transcript, tail_session
@@ -735,6 +735,95 @@ async def get_library(q: str = "", limit: int = 20, probe: bool = True) -> dict:
         lib.score_query(q, limit=limit) if q else [e.to_dict() for e in lib.entries][:limit]
     )
     return {"query": q, "repos": repos, "stats": library.stats(lib), "results": entries}
+
+
+# --------------------------------------------------------------------------
+# the MCP proxy: one server fronting the rest, with a resident group
+# --------------------------------------------------------------------------
+
+
+@app.get("/api/proxy")
+def get_proxy(repo: str) -> dict:
+    """Groups, savings and the cached tool index. Never probes — this is a read."""
+    return proxy.status(repo)
+
+
+class ProxyRepoBody(BaseModel):
+    repo: str
+
+
+@app.post("/api/proxy/refresh")
+async def refresh_proxy_index(body: ProxyRepoBody) -> dict:
+    """Re-probe every server so tools outside the group stay findable."""
+    stats = await proxy.refresh_index(body.repo)
+    return {**stats, **proxy.status(body.repo)}
+
+
+class InstallProxyBody(BaseModel):
+    repo: str
+    group: str | None = None
+    budget_tokens: int = 1200
+
+
+@app.post("/api/proxy/install")
+async def install_proxy(body: InstallProxyBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
+    try:
+        return await proxy.install(body.repo, group=body.group,
+                                   budget_tokens=body.budget_tokens)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class UninstallProxyBody(BaseModel):
+    repo: str
+    reattach: bool = True
+
+
+@app.post("/api/proxy/uninstall")
+def uninstall_proxy(body: UninstallProxyBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
+    return proxy.uninstall(body.repo, reattach=body.reattach)
+
+
+class GroupBody(BaseModel):
+    repo: str
+    name: str
+    tools: dict = {}
+    description: str = ""
+    activate: bool = True
+
+
+@app.post("/api/proxy/group")
+def save_group(body: GroupBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
+    try:
+        return proxy.set_group(body.repo, body.name, body.tools,
+                               description=body.description, activate=body.activate)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class GroupNameBody(BaseModel):
+    repo: str
+    name: str
+
+
+@app.post("/api/proxy/activate")
+def activate_group(body: GroupNameBody) -> dict:
+    _ATTRIBUTION_CACHE.pop(body.repo, None)
+    try:
+        return proxy.activate_group(body.repo, body.name)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/api/proxy/group/delete")
+def delete_group(body: GroupNameBody) -> dict:
+    try:
+        return proxy.delete_group(body.repo, body.name)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
 
 
 # --------------------------------------------------------------------------

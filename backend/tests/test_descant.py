@@ -811,6 +811,185 @@ def test_a_partially_read_file_is_flagged():
         check("only the prefix is returned", len(part["text"]) == 1000)
 
 
+def _temp_home(td: str):
+    """Point $HOME at a scratch dir so nothing here touches a real config."""
+    import os
+
+    old = os.environ.get("HOME")
+    os.environ["HOME"] = td
+    return old
+
+
+def _restore_home(old) -> None:
+    import os
+
+    if old is None:
+        os.environ.pop("HOME", None)
+    else:
+        os.environ["HOME"] = old
+
+
+def _weather_repo(td: str) -> str:
+    """A repo whose only MCP server is the real fixture weather server."""
+    fixture = FIXTURES.parent / "mcp" / "weather_server.py"
+    repo = Path(td) / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"weather": {"command": "python3", "args": [str(fixture)]}}})
+    )
+    return str(repo)
+
+
+def test_proxy_group_keeps_chosen_tools_resident_and_hides_the_rest():
+    """The whole point: per-tool residency, where Claude Code only has per-server.
+
+    Everything outside the group must stay *reachable* — hidden is not the same
+    as removed, or a group would be a restriction rather than a residency list.
+    """
+    import asyncio
+
+    from descant import proxy
+
+    with tempfile.TemporaryDirectory() as td:
+        old = _temp_home(td)
+        try:
+            repo = _weather_repo(td)
+            stats = asyncio.run(proxy.refresh_index(repo))
+            check("every fixture tool is indexed", stats["tools"] == 4, str(stats))
+
+            cfg = proxy.load_config(repo)
+            names = [t["name"] for t in cfg["index"]["weather"]]
+            proxy.set_group(repo, "minimal", {"weather": [names[0]]})
+
+            p = proxy.Proxy(repo)
+            exposed = [t["name"] for t in p.tools()]
+            check("the chosen tool is resident", f"weather__{names[0]}" in exposed)
+            check("the others are not", f"weather__{names[1]}" not in exposed)
+            check("find_tool is always offered", "find_tool" in exposed)
+            check("call_tool is always offered", "call_tool" in exposed)
+
+            hits = proxy.search_index(cfg["index"], "severe weather alerts")
+            check("a hidden tool is still findable", any("alert" in h["tool"] for h in hits))
+            check("and its real schema comes back", bool(hits[0].get("schema")))
+        finally:
+            _restore_home(old)
+
+
+def test_proxy_calls_a_real_upstream_server_either_way():
+    """Resident and non-resident tools must both actually work.
+
+    Run against the real fixture MCP server, not a mock — the proxy's only job
+    is speaking the protocol, so mocking it would test nothing.
+    """
+    import asyncio
+
+    from descant import proxy
+
+    with tempfile.TemporaryDirectory() as td:
+        old = _temp_home(td)
+        try:
+            repo = _weather_repo(td)
+            asyncio.run(proxy.refresh_index(repo))
+            proxy.set_group(repo, "minimal", {"weather": ["get_current_weather"]})
+
+            p = proxy.Proxy(repo)
+            try:
+                resident = p.call("weather__get_current_weather", {"location": "Austin"})
+                check("a resident tool returns real content",
+                      "C," in resident["content"][0]["text"], str(resident))
+
+                hidden = p.call("call_tool", {
+                    "tool": "weather__get_severe_alerts",
+                    "arguments": {"region": "TX"},
+                })
+                check("a hidden tool is callable on demand",
+                      not hidden.get("isError"), str(hidden))
+
+                unknown = p.call("weather__does_not_exist", {})
+                check("an unknown tool is an error result, not a crash",
+                      unknown.get("isError") is True)
+            finally:
+                p.close()
+        finally:
+            _restore_home(old)
+
+
+def test_proxy_savings_count_its_own_overhead():
+    """A saving that ignored find_tool and call_tool would be a lie.
+
+    The meta tools are resident forever, so they belong on the 'after' side —
+    which is also why proxying a small server is not worth it, and the number
+    has to be allowed to say so.
+    """
+    from descant import proxy
+
+    with tempfile.TemporaryDirectory() as td:
+        old = _temp_home(td)
+        try:
+            repo = str(Path(td) / "repo")
+            Path(repo).mkdir()
+            cfg = proxy.load_config(repo)
+            cfg["index"] = {
+                "big": [
+                    {"name": f"tool_{i}", "description": "x" * 400, "schema": {"type": "object"}}
+                    for i in range(20)
+                ]
+            }
+            cfg["groups"] = {"g": {"tools": {"big": ["tool_0"]}}}
+            cfg["active"] = "g"
+            proxy.save_config(repo, cfg)
+
+            s = proxy.savings(repo)
+            check("overhead is charged to the proxy", s["meta_tokens"] > 0)
+            check("one of twenty tools stays resident", s["resident_tools"] == 1)
+            check("and the rest stop being paid for", s["saved_tokens"] > 0)
+            check("after = resident + overhead", s["after_tokens"] >= s["meta_tokens"])
+        finally:
+            _restore_home(old)
+
+
+def test_proxy_uninstall_reattaches_only_what_it_detached():
+    """Installing detaches servers. Putting back more than that is destructive.
+
+    A server the user had already switched off must stay off, or uninstalling
+    would silently re-attach cost they had removed on purpose.
+    """
+    import asyncio
+
+    from descant import proxy
+
+    with tempfile.TemporaryDirectory() as td:
+        old = _temp_home(td)
+        try:
+            fixture = FIXTURES.parent / "mcp" / "weather_server.py"
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {
+                "weather": {"command": "python3", "args": [str(fixture)]},
+                "chosen_off": {"command": "python3", "args": ["/nonexistent.py"]},
+            }}))
+            from descant import loadout
+
+            loadout.set_mcp_enabled(str(repo), "weather", True)
+            loadout.set_mcp_enabled(str(repo), "chosen_off", False)
+
+            result = asyncio.run(proxy.install(str(repo)))
+            check("the enabled server was detached", result["detached"] == ["weather"],
+                  str(result["detached"]))
+            after = {s.name: s.enabled for s in __import__(
+                "descant.mcp", fromlist=["mcp"]).discover(str(repo))}
+            check("the proxy is attached in its place", after.get("descant") is True)
+
+            back = proxy.uninstall(str(repo))
+            check("only the detached server returns", back["reattached"] == ["weather"])
+            final = {s.name: s.enabled for s in __import__(
+                "descant.mcp", fromlist=["mcp"]).discover(str(repo))}
+            check("the deliberately-off server stayed off", final.get("chosen_off") is False)
+            check("and the proxy is gone", "descant" not in final)
+        finally:
+            _restore_home(old)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
