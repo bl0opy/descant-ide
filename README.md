@@ -145,6 +145,12 @@ it. A tab with unsaved changes carries an amber dot and asks before closing.
 Saves go through a temp file in the same directory and are moved into place, so
 an interrupted write cannot leave a half-written source file behind.
 
+**Auto-save** is in Settings, off by default — *after a pause in typing* (with a
+configurable delay) or *when the editor loses focus*. Off is the default on
+purpose: Descant sits alongside agents reading and writing the same files, and a
+buffer that saves itself mid-edit is a surprise. Autosaves are silent; a failed
+save always says so.
+
 ## Running the open file
 
 The **▶ arrow in the title bar** runs whatever the editor is showing —
@@ -166,8 +172,9 @@ runner leaves the arrow disabled and says why.
 ## Settings
 
 The gear at the bottom of the activity bar. Everything in it is wired to
-something real — default permission mode for new chats, editor and terminal font
-size, whether the explorer shows dotfiles, and whether MCP servers are probed
+something real — default permission mode for new chats, auto-save, editor and
+terminal font size, whether the explorer shows dotfiles, and whether MCP servers
+are probed
 (measuring costs a process per server, so it can be turned off). It also lists
 the environment variables actually in effect, and can reset pane sizes or close
 every live conversation at once.

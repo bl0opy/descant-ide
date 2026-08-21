@@ -197,6 +197,7 @@ function createWindow() {
 // useful. A menu accelerator fires regardless of what has focus.
 function send(action) {
   return () => {
+    if (process.env.DESCANT_DEBUG) process.stdout.write(`[menu] ${action}\n`);
     if (win && !win.isDestroyed()) win.webContents.send('menu:action', action);
   };
 }

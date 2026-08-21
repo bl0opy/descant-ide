@@ -2043,3 +2043,10 @@ body.resizing .xterm {
 .btn.small.danger {
   color: var(--danger);
 }
+
+/* A dependent setting, indented under the one that governs it. */
+.set-row.set-sub {
+  padding-left: var(--space-6);
+  border-left: 2px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}

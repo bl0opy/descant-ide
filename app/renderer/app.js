@@ -274,6 +274,7 @@
   function closeTab(key) {
     const i = S.tabs.findIndex((t) => t.key === key);
     if (i < 0) return;
+    if (key.startsWith('file:')) clearTimeout(autoSaveTimer);
     if (S.tabs[i].dirty && !confirm(`${S.tabs[i].label} has unsaved changes. Close anyway?`)) {
       return;
     }
@@ -504,6 +505,28 @@
     togglePanel(true);
   }
 
+  let autoSaveTimer = null;
+
+  /**
+   * Autosave, if the setting asks for it.
+   *
+   * Off by default on purpose: this app exists alongside agents that read and
+   * write the same files, and a buffer that saves itself mid-edit is a
+   * surprise. When it is on, the debounce restarts on every keystroke so a save
+   * lands in a pause, not mid-word.
+   */
+  function scheduleAutoSave() {
+    const cfg = window.Settings.get();
+    clearTimeout(autoSaveTimer);
+    if (cfg.autoSave !== 'delay') return;
+    autoSaveTimer = setTimeout(() => saveOpenFile({ quiet: true }), cfg.autoSaveDelay);
+  }
+
+  function autoSaveOnBlur() {
+    if (window.Settings.get().autoSave !== 'blur') return;
+    saveOpenFile({ quiet: true });
+  }
+
   /** Mark a tab as having unsaved changes, without redrawing the whole bar. */
   function markTabDirty(key, dirty) {
     const tab = S.tabs.find((t) => t.key === key);
@@ -518,14 +541,14 @@
    * Monaco was already editable, but nothing ever saved — you could type into a
    * file all day and lose it on the next tab switch. This is that missing half.
    */
-  async function saveOpenFile() {
+  async function saveOpenFile({ quiet = false } = {}) {
     const path = S.openFilePath;
     if (!path || !window.Editor.current()) {
-      toast('no file open to save');
+      if (!quiet) toast('no file open to save');
       return;
     }
     if (!window.Editor.isDirty()) {
-      toast('no changes to save');
+      if (!quiet) toast('no changes to save');
       return;
     }
     const text = window.Editor.currentText();
@@ -537,8 +560,10 @@
       });
       window.Editor.markSaved(text);
       markTabDirty(`file:${path}`, false);
-      toast(`saved ${path.split('/').pop()}`);
+      // An autosave that announced itself every second would be noise.
+      if (!quiet) toast(`saved ${path.split('/').pop()}`);
     } catch (err) {
+      // A failure is never quiet — silently not saving is the worst outcome.
       toast(`could not save: ${err.message}`, true);
     }
   }
@@ -983,7 +1008,11 @@
       await window.Editor.openFile(path, data.text, {
         onRun: runOpenFile,
         onSave: saveOpenFile,
-        onDirty: (dirty) => markTabDirty(`file:${path}`, dirty),
+        onDirty: (dirty) => {
+          markTabDirty(`file:${path}`, dirty);
+          if (dirty) scheduleAutoSave();
+        },
+        onBlur: autoSaveOnBlur,
       });
       refreshRunnable(path);
     } catch (err) {

@@ -10,6 +10,8 @@ window.Settings = (() => {
 
   const DEFAULTS = {
     permissionMode: 'manual', // what a new chat starts in
+    autoSave: 'off',          // 'off' | 'delay' | 'blur'
+    autoSaveDelay: 1000,      // ms of quiet before an autosave, when 'delay'
     fontSize: 12,             // editor and terminal
     showHidden: true,         // dotfiles in the explorer
     probeMcp: true,           // spawn MCP servers to measure them
@@ -98,6 +100,52 @@ window.Settings = (() => {
         mode
       )
     );
+
+    // --- editing --------------------------------------------------------
+    wrap.appendChild(el('<h2>Editing</h2>'));
+
+    const auto = el(`
+      <select class="set-select">
+        <option value="off">Off — save with ${
+          navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl'
+        }S</option>
+        <option value="delay">After a pause in typing</option>
+        <option value="blur">When the editor loses focus</option>
+      </select>`);
+    auto.value = current.autoSave;
+    const delayRow = el(`
+      <div class="set-row set-sub">
+        <div class="set-label">
+          <div class="set-name">Pause before saving</div>
+          <div class="set-help">Milliseconds of quiet before an autosave fires.</div>
+        </div>
+        <div class="set-control">
+          <input class="set-number" type="number" min="200" max="10000" step="100"
+                 value="${current.autoSaveDelay}" />
+        </div>
+      </div>`);
+    const delayInput = delayRow.querySelector('.set-number');
+    delayInput.addEventListener('change', () => {
+      const n = Math.min(10000, Math.max(200, parseInt(delayInput.value, 10) || DEFAULTS.autoSaveDelay));
+      delayInput.value = n;
+      set({ autoSaveDelay: n });
+    });
+    const syncDelayRow = () => {
+      delayRow.style.display = auto.value === 'delay' ? '' : 'none';
+    };
+    auto.addEventListener('change', () => {
+      set({ autoSave: auto.value });
+      syncDelayRow();
+    });
+    wrap.appendChild(
+      row(
+        'Auto-save',
+        'Off by default: a file that saves itself while an agent is reading it is a surprise, so this is opt-in.',
+        auto
+      )
+    );
+    wrap.appendChild(delayRow);
+    syncDelayRow();
 
     // --- appearance -----------------------------------------------------
     wrap.appendChild(el('<h2>Appearance</h2>'));

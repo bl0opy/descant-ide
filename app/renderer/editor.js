@@ -172,6 +172,7 @@ window.Editor = (() => {
     );
 
     editor.onDidChangeModelContent(() => handlers.onDirty?.(isDirty()));
+    editor.onDidBlurEditorText(() => handlers.onBlur?.());
     return editor;
   }
 
