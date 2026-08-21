@@ -1399,3 +1399,139 @@ textarea:focus {
   color: var(--fg-faint);
   font-variant-numeric: tabular-nums;
 }
+
+/* ==========================================================================
+   MCP server form, mined-skill scope, skill sharing
+   ========================================================================== */
+
+.mcp-form {
+  margin-top: var(--space-5);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.mcp-form-toggle {
+  display: block;
+  width: 100%;
+  padding: var(--space-4);
+  text-align: left;
+  font-size: var(--text-sm);
+  color: var(--fg-faint);
+}
+
+.mcp-form-toggle:hover {
+  color: var(--fg);
+}
+
+.mcp-form-body {
+  display: none;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: 0 var(--space-4) var(--space-4);
+}
+
+.mcp-form.open .mcp-form-body {
+  display: flex;
+}
+
+.mcp-form.open .mcp-form-toggle {
+  color: var(--fg-strong);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-4);
+}
+
+.mcp-form label,
+.mcp-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+  flex: 1;
+}
+
+.mcp-form .field-row {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.mcp-form .field-note {
+  color: var(--fg-faint);
+  opacity: 0.75;
+}
+
+.mcp-form select {
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  font: inherit;
+  outline: none;
+}
+
+.mcp-form textarea {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  resize: vertical;
+}
+
+.mcp-form .f-status.ok {
+  color: var(--success);
+}
+
+.mcp-form .f-status.err {
+  color: var(--danger);
+}
+
+.btn.danger {
+  color: var(--danger);
+}
+
+.mine-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.mine-slug {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-3);
+  width: 15rem;
+}
+
+.mine-scope,
+.lib-target {
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  outline: none;
+}
+
+.mine-status,
+.lib-status {
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+}
+
+.mine-status.ok,
+.lib-status.ok {
+  color: var(--success);
+}
+
+.mine-status.err,
+.lib-status.err {
+  color: var(--danger);
+}
+
+.lib-share {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}

@@ -406,6 +406,129 @@ def test_inspector_carves_measured_attribution_from_preamble():
     )
 
 
+def test_mcp_config_normalisation():
+    """A pasted command line is the common case; argv is an implementation detail."""
+    from descant import mcp
+
+    cfg = mcp.normalise_config({"command": "uvx mcp-server-weather --verbose"})
+    check("command split from argv", cfg == {"command": "uvx", "args": ["mcp-server-weather", "--verbose"]})
+
+    url = mcp.normalise_config({"url": "https://example.com/mcp"})
+    check("url transport typed", url == {"url": "https://example.com/mcp", "type": "http"})
+
+    env = mcp.normalise_config({"command": "srv", "env": {"K": "v"}})
+    check("env preserved", env["env"] == {"K": "v"})
+
+    for bad in ({}, {"command": "   "}):
+        try:
+            mcp.normalise_config(bad)
+        except ValueError:
+            pass
+        else:
+            check("empty config rejected", False)
+    check("empty config rejected", True)
+
+    for bad_name in ("", "has space", "semi;colon"):
+        try:
+            mcp.validate_name(bad_name)
+        except ValueError:
+            pass
+        else:
+            check(f"name {bad_name!r} rejected", False)
+    check("bad names rejected", True)
+
+
+def test_mcp_saved_per_repo_is_discovered_and_enabled():
+    """Saving must land where discovery looks -- and .mcp.json needs enabling too."""
+    from descant import mcp
+
+    with tempfile.TemporaryDirectory() as td:
+        home, repo = Path(td) / "home", Path(td) / "repo"
+        home.mkdir()
+        repo.mkdir()
+        real_home = Path.home
+        Path.home = staticmethod(lambda: home)  # type: ignore[assignment]
+        try:
+            mcp.save_server(str(repo), "weather", {"command": "srv --flag"}, scope="project")
+            written = json.loads((repo / ".mcp.json").read_text())
+            check("project scope writes .mcp.json", "weather" in written["mcpServers"])
+
+            found = {s.name: s for s in mcp.discover(str(repo))}
+            check("saved server is discovered", "weather" in found)
+            check(
+                "a .mcp.json save also enables it, or it would appear to do nothing",
+                found["weather"].enabled,
+            )
+
+            mcp.save_server(str(repo), "local-one", {"command": "other"}, scope="local")
+            check(
+                "local scope stays out of the repo",
+                "local-one" not in json.loads((repo / ".mcp.json").read_text())["mcpServers"],
+            )
+            check("local scope is still discovered", "local-one" in {s.name for s in mcp.discover(str(repo))})
+
+            mcp.delete_server(str(repo), "weather")
+            check("deleted server disappears", "weather" not in {s.name for s in mcp.discover(str(repo))})
+
+            try:
+                mcp.delete_server(str(repo), "weather")
+            except ValueError:
+                check("deleting what this repo does not define is refused", True)
+            else:
+                check("deleting what this repo does not define is refused", False)
+        finally:
+            Path.home = real_home  # type: ignore[assignment]
+
+
+def test_skill_scope_decides_which_agents_get_it():
+    from descant import loadout, skills
+
+    md = "---\nname: t\ndescription: d\n---\n\nbody\n"
+    with tempfile.TemporaryDirectory() as td:
+        home, repo, other = Path(td) / "home", Path(td) / "repo", Path(td) / "other"
+        for d in (home, repo, other):
+            d.mkdir()
+        real_home = Path.home
+        Path.home = staticmethod(lambda: home)  # type: ignore[assignment]
+        try:
+            r = loadout.write_mined_skill(str(repo), "Test Then Lint!", md, scope="repo")
+            check("slug is filesystem-safe", r["slug"] == "test-then-lint")
+            check("repo scope lands in the repo", Path(r["path"]).is_relative_to(repo))
+
+            try:
+                loadout.write_mined_skill(str(repo), "test-then-lint", md, scope="repo")
+            except FileExistsError:
+                check("an existing skill is not silently clobbered", True)
+            else:
+                check("an existing skill is not silently clobbered", False)
+            check(
+                "overwrite is possible when asked for",
+                loadout.write_mined_skill(str(repo), "test-then-lint", md, scope="repo", overwrite=True)["overwritten"],
+            )
+
+            u = loadout.copy_skill(r["path"], scope="user")
+            check("user scope lands in ~/.claude/skills", Path(u["path"]).is_relative_to(home))
+            check(
+                "a user-scope skill is visible with no repo at all",
+                "t" in {s.name for s in skills.discover(None)},
+            )
+
+            c = loadout.copy_skill(u["path"], scope="repo", repo_path=str(other))
+            check("a skill can be handed to another repo", Path(c["path"]).is_relative_to(other))
+            check("the whole directory travels, not just SKILL.md", (Path(c["path"]) / "SKILL.md").is_file())
+
+            loadout.delete_skill(c["path"])
+            check("delete removes the directory", not Path(c["path"]).exists())
+            try:
+                loadout.delete_skill(str(other))
+            except ValueError:
+                check("delete refuses anything outside a .claude/skills tree", True)
+            else:
+                check("delete refuses anything outside a .claude/skills tree", False)
+        finally:
+            Path.home = real_home  # type: ignore[assignment]
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

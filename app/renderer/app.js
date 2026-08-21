@@ -39,6 +39,13 @@
     toastTimer = setTimeout(() => (el.className = ''), 4200);
   }
 
+  const post = (path, body) =>
+    api(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
   async function api(path, opts) {
     const res = await fetch(S.api + path, opts);
     if (!res.ok) {
@@ -676,6 +683,19 @@
             });
             showLoadout();
           },
+          testMcp: (name, config) => post('/api/loadout/mcp/test', { repo, name, config }),
+          saveMcp: async (name, config, scope) => {
+            const res = await post('/api/loadout/mcp/save', { repo, name, config, scope });
+            toast(`saved ${res.name} · ${res.written}`);
+            showLoadout();
+          },
+          deleteMcp: async (name, source) => {
+            const where = source === '.mcp.json' ? 'the checked-in .mcp.json' : 'your local config';
+            if (!confirm(`Remove ${name} from ${where}?`)) return;
+            await post('/api/loadout/mcp/delete', { repo, name });
+            toast(`removed ${name}`);
+            showLoadout();
+          },
           previewConversion: async (name) => {
             host.innerHTML =
               '<div class="inspector"><p class="muted">Generating skill…</p></div>';
@@ -717,22 +737,30 @@
         // rather than showing an empty panel that looks broken.
         if (!data.candidates.length && repo) data = await api('/api/mining?limit=20');
         window.Panels.renderMining(host, data, {
-          acceptMined: async (c) => {
+          acceptMined: async (c, opts = {}) => {
+            const scope = opts.scope || 'repo';
             const target = repo || c.repos[0];
-            if (!target) {
-              toast('no repo on this machine to write the skill into', true);
-              return;
+            if (scope === 'repo' && !target) {
+              throw new Error('no repo on this machine to write the skill into');
             }
-            const res = await api('/api/mining/accept', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                repo: target,
-                slug: c.proposed_skill.slug,
-                skill_md: c.proposed_skill.skill_md,
-              }),
-            });
-            toast(`created ${res.slug} in ${target.split('/').pop()}`);
+            const payload = {
+              repo: target || '',
+              slug: opts.slug || c.proposed_skill.slug,
+              skill_md: c.proposed_skill.skill_md,
+              scope,
+            };
+            let res;
+            try {
+              res = await post('/api/mining/accept', payload);
+            } catch (err) {
+              // A name collision is a question, not a failure: the usual answer
+              // is "yes, replace the older version of the same workflow".
+              if (!/already exists/.test(err.message)) throw err;
+              if (!confirm(`${payload.slug} already exists. Replace it?`)) return;
+              res = await post('/api/mining/accept', { ...payload, overwrite: true });
+            }
+            toast(`created ${res.slug} — available to ${res.available_to}`);
+            return res;
           },
         });
       } catch (err) {
@@ -747,6 +775,19 @@
       try {
         const data = await api(`/api/library?q=${encodeURIComponent(query)}&limit=25`);
         window.Panels.renderLibrary(host, data, {
+          copySkill: async (entry, target) => {
+            const body =
+              target === 'user'
+                ? { source_path: entry.path, scope: 'user' }
+                : { source_path: entry.path, scope: 'repo', repo: target };
+            try {
+              return await post('/api/skills/copy', body);
+            } catch (err) {
+              if (!/already exists/.test(err.message)) throw err;
+              if (!confirm(`${entry.name} already exists there. Replace it?`)) throw err;
+              return post('/api/skills/copy', { ...body, overwrite: true });
+            }
+          },
           search: (q) => {
             query = q;
             const tab = S.tabs.find((t) => t.key === 'library');

@@ -95,6 +95,15 @@ window.Panels = (() => {
         row.querySelector('.loadout-actions').appendChild(conv);
       }
 
+      // Only definitions this repo owns can be deleted.  A global server is
+      // every repo's, so the honest verb there is "detach", which the toggle
+      // already does.
+      if (s.source === '.mcp.json' || s.source === 'project') {
+        const del = el(`<button class="btn small secondary danger">Remove</button>`);
+        del.addEventListener('click', () => handlers.deleteMcp(s.name, s.source));
+        row.querySelector('.loadout-actions').appendChild(del);
+      }
+
       if (s.tools.length) {
         const details = el(`
           <div class="tool-list">
@@ -111,6 +120,8 @@ window.Panels = (() => {
       }
       wrap.appendChild(row);
     }
+
+    wrap.appendChild(renderMcpForm(data.repo_path, handlers));
 
     // --- skills ---------------------------------------------------------
     wrap.appendChild(
@@ -142,6 +153,109 @@ window.Panels = (() => {
     }
 
     host.appendChild(wrap);
+  }
+
+
+  /**
+   * Define an MCP server for one repo.
+   *
+   * Two things this form does that hand-editing JSON does not: it makes the
+   * scope an explicit choice rather than an accident of which file you happened
+   * to open, and it lets you *measure the server before attaching it*. A server
+   * you cannot connect to costs nothing but noise; one with forty tools costs
+   * you thousands of tokens on every turn, and you should know which you have
+   * before it is live.
+   */
+  function renderMcpForm(repoPath, handlers) {
+    const card = el(`
+      <div class="mcp-form">
+        <button class="mcp-form-toggle">+ Add an MCP server to this repo</button>
+        <div class="mcp-form-body">
+          <div class="field-row">
+            <label>Name<input class="f-name" type="text" placeholder="weather" spellcheck="false" /></label>
+            <label>Scope
+              <select class="f-scope">
+                <option value="local">Just me — private to this machine</option>
+                <option value="project">The team — committed in .mcp.json</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">Command or URL
+            <input class="f-command" type="text" spellcheck="false"
+                   placeholder="uvx mcp-server-weather   ·   or https://example.com/mcp" />
+          </label>
+          <label class="field">Environment <span class="field-note">one NAME=value per line; secrets stay out of the repo on the private scope</span>
+            <textarea class="f-env" rows="2" spellcheck="false" placeholder="API_KEY=..."></textarea>
+          </label>
+          <div class="composer-row">
+            <button class="btn secondary small f-test">Test connection</button>
+            <button class="btn small f-save">Save to repo</button>
+            <span class="hint f-status"></span>
+          </div>
+        </div>
+      </div>`);
+
+    const body = card.querySelector('.mcp-form-body');
+    card.querySelector('.mcp-form-toggle').addEventListener('click', () => {
+      card.classList.toggle('open');
+      if (card.classList.contains('open')) card.querySelector('.f-name').focus();
+    });
+
+    const status = card.querySelector('.f-status');
+    const say = (msg, kind = '') => {
+      status.textContent = msg;
+      status.className = 'hint f-status ' + kind;
+    };
+
+    const collect = () => {
+      const command = card.querySelector('.f-command').value.trim();
+      const env = {};
+      for (const line of card.querySelector('.f-env').value.split('\n')) {
+        const i = line.indexOf('=');
+        if (i > 0) env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+      }
+      const config = /^https?:\/\//i.test(command) ? { url: command } : { command };
+      if (Object.keys(env).length) config.env = env;
+      return {
+        name: card.querySelector('.f-name').value.trim(),
+        scope: card.querySelector('.f-scope').value,
+        config,
+      };
+    };
+
+    card.querySelector('.f-test').addEventListener('click', async () => {
+      const { name, config } = collect();
+      say('probing…');
+      try {
+        const res = await handlers.testMcp(name, config);
+        if (res.ok) {
+          say(
+            `connected · ${res.tool_count} tools · ${fmtTokens(res.token_cost)} tokens every turn`,
+            'ok'
+          );
+        } else {
+          say(res.probe_error || 'could not connect', 'err');
+        }
+      } catch (err) {
+        say(err.message, 'err');
+      }
+    });
+
+    card.querySelector('.f-save').addEventListener('click', async () => {
+      const { name, scope, config } = collect();
+      say('saving…');
+      try {
+        await handlers.saveMcp(name, config, scope);
+      } catch (err) {
+        say(err.message, 'err');
+      }
+    });
+
+    body.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.tagName === 'INPUT') card.querySelector('.f-save').click();
+    });
+
+    return card;
   }
 
   /** Preview dialog for an MCP -> skill conversion. */
@@ -234,7 +348,11 @@ window.Panels = (() => {
     wrap.appendChild(
       el(`<p class="muted">Sequences seen in more than one session rank highest: repetition
           inside a single session is usually a retry loop, whereas the same steps across
-          sessions is a habit worth capturing.</p>`)
+          sessions is a habit worth capturing. Write a skill to <strong>this repo</strong>
+          and its agents get it; write it to <strong>every repo</strong>
+          (<code>~/.claude/skills</code>) and so does every agent on this machine — which
+          is how a workflow learned in one project stops being that project's private
+          lore.</p>`)
     );
 
     for (const c of data.candidates) {
@@ -266,7 +384,14 @@ window.Panels = (() => {
           </div>
           <div class="mine-actions">
             <button class="btn small secondary preview">View SKILL.md</button>
+            <input class="mine-slug" type="text" spellcheck="false"
+                   value="${esc(c.proposed_skill.slug)}" title="Skill name" />
+            <select class="mine-scope" title="Who gets this skill">
+              <option value="repo">this repo</option>
+              <option value="user">every repo</option>
+            </select>
             <button class="btn small accept">Create skill</button>
+            <span class="mine-status"></span>
           </div>
           <div class="tool"><div class="tool-body">${esc(
             c.proposed_skill.skill_md
@@ -277,9 +402,22 @@ window.Panels = (() => {
       card.querySelector('.preview').addEventListener('click', () =>
         toolBlock.classList.toggle('open')
       );
-      card.querySelector('.accept').addEventListener('click', () =>
-        handlers.acceptMined(c)
-      );
+      const status = card.querySelector('.mine-status');
+      card.querySelector('.accept').addEventListener('click', async () => {
+        status.textContent = '';
+        status.className = 'mine-status';
+        try {
+          await handlers.acceptMined(c, {
+            slug: card.querySelector('.mine-slug').value.trim(),
+            scope: card.querySelector('.mine-scope').value,
+          });
+          status.textContent = 'written';
+          status.className = 'mine-status ok';
+        } catch (err) {
+          status.textContent = err.message;
+          status.className = 'mine-status err';
+        }
+      });
       wrap.appendChild(card);
     }
     host.appendChild(wrap);
@@ -349,6 +487,40 @@ window.Panels = (() => {
           </div>
           <div class="lib-cost">${fmtTokens(r.always_on_tokens)}</div>
         </div>`);
+
+      // Skills are directories on disk, so they can be handed to another repo.
+      // MCP tools cannot: they belong to a server, not to a path.
+      if (r.kind === 'skill' && r.path && handlers.copySkill) {
+        const share = el(`
+          <div class="lib-share">
+            <select class="lib-target">
+              <option value="user">every repo (~/.claude/skills)</option>
+              ${(data.repos || [])
+                .map(
+                  (repo) =>
+                    `<option value="${esc(repo)}">${esc(repo.split('/').pop())}</option>`
+                )
+                .join('')}
+            </select>
+            <button class="btn small secondary lib-copy">Copy</button>
+            <span class="lib-status"></span>
+          </div>`);
+        const status = share.querySelector('.lib-status');
+        share.querySelector('.lib-copy').addEventListener('click', async () => {
+          const target = share.querySelector('.lib-target').value;
+          status.textContent = 'copying…';
+          status.className = 'lib-status';
+          try {
+            const res = await handlers.copySkill(r, target);
+            status.textContent = `copied to ${res.path.replace(/.*\/\.claude\//, '.claude/')}`;
+            status.className = 'lib-status ok';
+          } catch (err) {
+            status.textContent = err.message;
+            status.className = 'lib-status err';
+          }
+        });
+        row.querySelector('.lib-main').appendChild(share);
+      }
       wrap.appendChild(row);
     }
 
