@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -856,6 +857,87 @@ def delete_session(session_id: str) -> dict:
 
     CACHE.forget(str(path))
     return {"deleted": sess.session_id, "path": str(path), "title": sess.title}
+
+
+# --------------------------------------------------------------------------
+# running the open file
+# --------------------------------------------------------------------------
+
+#: extension -> argv prefix. The value is a list so nothing depends on shell
+#: word-splitting; the file path is appended and quoted by the caller.
+_RUNNERS = {
+    ".py": ["python3"],
+    ".js": ["node"],
+    ".mjs": ["node"],
+    ".cjs": ["node"],
+    ".ts": ["npx", "tsx"],
+    ".sh": ["bash"],
+    ".bash": ["bash"],
+    ".zsh": ["zsh"],
+    ".rb": ["ruby"],
+    ".php": ["php"],
+    ".lua": ["lua"],
+    ".pl": ["perl"],
+    ".go": ["go", "run"],
+    ".java": ["java"],
+    ".swift": ["swift"],
+    ".r": ["Rscript"],
+    ".jl": ["julia"],
+}
+
+
+@app.get("/api/runner")
+def runner_for(path: str, repo: str = "") -> dict:
+    """How would you run this file?
+
+    Detection rather than a fixed table where it matters: a repo with a
+    ``.venv`` means ``python3`` is the wrong python, and a Rust file belongs to
+    its crate rather than to itself. Returning the command (instead of running
+    it) keeps the decision visible — the UI types it into the terminal, where
+    you can see and edit it before it goes.
+    """
+    target = Path(path).expanduser()
+    if not target.is_file():
+        raise HTTPException(404, f"not a file: {target}")
+
+    root = Path(repo).expanduser() if repo else target.parent
+    suffix = target.suffix.lower()
+
+    # A crate is built, not interpreted; the same is true of a Go module.
+    for parent in [target.parent, *target.parents]:
+        if not str(parent).startswith(str(root)):
+            break
+        if suffix == ".rs" and (parent / "Cargo.toml").is_file():
+            return {"command": "cargo run", "cwd": str(parent), "kind": "cargo"}
+
+    if suffix == ".rs":
+        return {
+            "command": f"rustc {shlex.quote(str(target))} -o /tmp/descant-run && /tmp/descant-run",
+            "cwd": str(root),
+            "kind": "rustc",
+        }
+
+    argv = _RUNNERS.get(suffix)
+    if not argv:
+        return {
+            "command": "",
+            "cwd": str(root),
+            "kind": "none",
+            "reason": f"no runner for {suffix or 'this file type'}",
+        }
+
+    # Prefer the repo's own interpreter over whatever is on PATH.
+    if argv[0] == "python3":
+        for candidate in (root / ".venv" / "bin" / "python3", root / "venv" / "bin" / "python3"):
+            if candidate.is_file():
+                argv = [str(candidate)]
+                break
+
+    return {
+        "command": " ".join([*argv, shlex.quote(str(target))]),
+        "cwd": str(root),
+        "kind": argv[0],
+    }
 
 
 def main() -> None:

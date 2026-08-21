@@ -1815,3 +1815,63 @@ body.resizing iframe,
 body.resizing .xterm {
   pointer-events: none;
 }
+
+/* ==========================================================================
+   Run arrow (title bar) and inline tree input
+   ========================================================================== */
+
+#btn-run-file {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--success);
+  -webkit-app-region: no-drag;
+  flex: 0 0 auto;
+}
+
+#btn-run-file:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+#btn-run-file:disabled {
+  color: var(--fg-faint);
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tree-row.tree-new {
+  background: var(--bg-hover);
+}
+
+.tname-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: 1px var(--space-2);
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  outline: none;
+}
+
+.tree-row .row-add {
+  opacity: 0;
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+  line-height: 1;
+  padding: 0 2px;
+  flex: 0 0 auto;
+}
+
+.tree-row:hover .row-add {
+  opacity: 1;
+}
+
+.tree-row .row-add:hover {
+  color: var(--accent);
+}

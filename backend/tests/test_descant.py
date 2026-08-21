@@ -687,6 +687,58 @@ def test_file_writes_cannot_escape_the_repo():
             check("the repo itself cannot be deleted", False)
 
 
+def test_runner_detection_prefers_the_repo_over_the_path():
+    """A project with a .venv means ``python3`` is the wrong python."""
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "main.py").write_text("print(1)")
+        (root / "app.js").write_text("console.log(1)")
+        (root / "notes.md").write_text("# hi")
+
+        plain = server.runner_for(str(root / "main.py"), str(root))
+        check("python falls back to python3", plain["command"].startswith("python3 "))
+
+        venv = root / ".venv" / "bin"
+        venv.mkdir(parents=True)
+        (venv / "python3").write_text("#!/bin/sh\n")
+        scoped = server.runner_for(str(root / "main.py"), str(root))
+        check("but the repo's own interpreter wins", str(venv / "python3") in scoped["command"])
+
+        js = server.runner_for(str(root / "app.js"), str(root))
+        check("js runs under node", js["command"].startswith("node "))
+
+        md = server.runner_for(str(root / "notes.md"), str(root))
+        check("a file with no runner says so rather than guessing", md["command"] == "")
+        check("and explains why", "md" in md.get("reason", ""))
+
+
+def test_runner_treats_a_crate_as_a_crate():
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Cargo.toml").write_text("[package]\nname='x'\n")
+        src = root / "src"
+        src.mkdir()
+        (src / "main.rs").write_text("fn main(){}")
+        res = server.runner_for(str(src / "main.rs"), str(root))
+        check("a rust file inside a crate is built by cargo", res["command"] == "cargo run")
+        check("from the crate root", res["cwd"] == str(root))
+
+
+def test_runner_quotes_paths_with_spaces():
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        odd = root / "my script.py"
+        odd.write_text("print(1)")
+        res = server.runner_for(str(odd), str(root))
+        check("a path with a space is quoted, not split", "'" in res["command"])
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

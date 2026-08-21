@@ -46,7 +46,9 @@ to either for machine-readable output.
 - **Sidebar** — sessions grouped by repo. **New** starts a fresh conversation;
   hovering a session reveals a delete button (its transcript is the only record,
   so it asks first). The **Explorer** view is a real folder tree with filetype
-  icons, and can create and delete files of any type. The dot is the session's state:
+  icons. **+ File** / **+ Folder** create at the root, and hovering any folder
+  reveals its own **+** buttons; names are typed inline in the tree, so you can
+  see where the thing will land. The dot is the session's state:
   green spinner = running, grey = idle, amber = waiting on you, red = failed.
 - **Center** — tabs. Opening a session opens its context breakdown; opening a
   file opens Monaco.
@@ -132,10 +134,22 @@ is still never passed; every approval is a specific rule a person clicked.
 The backend follows the app down, so quitting never leaves a `claude` process
 running with no window to show for it.
 
-**Send** talks to Claude (`Cmd/Ctrl+Enter` works too). **Run** does something
-deliberately different: it opens the terminal and executes what you typed as a
-shell command, verbatim. Keeping those two obviously separate is why there are
-two buttons.
+**Send** talks to Claude (`Cmd/Ctrl+Enter` in the composer). **Run**, beside it,
+does something deliberately different: it opens the terminal and executes what
+you typed as a shell command, verbatim.
+
+## Running the open file
+
+The **▶ arrow in the title bar** runs whatever the editor is showing —
+`Cmd/Ctrl+Enter` anywhere outside the composer does the same. Hover it to see the
+exact command first.
+
+The interpreter comes from the *repo*, not a fixed table: a project with a
+`.venv` gets its own python rather than whatever is first on `PATH`, and a Rust
+file inside a crate is built with `cargo run` from the crate root instead of
+being compiled alone. The command is typed into the terminal rather than run in a
+hidden subprocess, so you can see it, edit it, and re-run it. A file type with no
+runner leaves the arrow disabled and says why.
 
 ## Panes
 

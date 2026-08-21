@@ -25,6 +25,7 @@
     panelMode: 'chat',  // 'chat' = live conversation, 'session' = read-only transcript
     chatCwd: null,      // which repo's chat the panel is showing
     fileRoot: null,     // repo the explorer is rooted at
+    openFilePath: null, // file showing in the editor, for the Run arrow
   };
 
   const $ = (id) => document.getElementById(id);
@@ -477,6 +478,73 @@
   }
 
   // ======================================================================
+  // running the open file
+  // ======================================================================
+  //
+  // The arrow in the title bar runs whatever file the editor is showing, with
+  // the interpreter the *repo* implies — a project with a .venv gets its own
+  // python, not whatever is first on PATH. The command goes into the terminal
+  // rather than a hidden subprocess, so you can see it, edit it, and re-run it.
+
+  let runnable = null; // {command, cwd} for the file currently open
+
+  async function refreshRunnable(path) {
+    const btn = $('btn-run-file');
+    runnable = null;
+    if (!path) {
+      btn.disabled = true;
+      btn.title = 'Open a file to run it';
+      return;
+    }
+    try {
+      const repo = S.fileRoot || $('composer-target').value || currentRepoPath() || '';
+      const res = await api(
+        `/api/runner?path=${encodeURIComponent(path)}&repo=${encodeURIComponent(repo)}`
+      );
+      if (!res.command) {
+        btn.disabled = true;
+        btn.title = res.reason || 'no runner for this file type';
+        return;
+      }
+      runnable = res;
+      btn.disabled = false;
+      btn.title = `${res.command}   (${
+        navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'
+      }+Enter)`;
+    } catch {
+      btn.disabled = true;
+      btn.title = 'no runner for this file';
+    }
+  }
+
+  async function runOpenFile() {
+    if (!runnable) {
+      toast(
+        S.openFilePath ? 'no runner for this file type' : 'open a file to run it'
+      );
+      return;
+    }
+    if (!window.Term.available()) {
+      toast('terminal unavailable — see the console', true);
+      return;
+    }
+    togglePanel(true);
+    const opened = await window.Term.open(runnable.cwd);
+    if (opened && opened.ok === false) {
+      toast(opened.error, true);
+      return;
+    }
+    setTimeout(
+      () => {
+        if (!window.Term.send(runnable.cwd, runnable.command)) {
+          toast('terminal went away before launch', true);
+        }
+      },
+      opened && opened.reused ? 0 : 400
+    );
+  }
+
+  // ======================================================================
   // file explorer — a real tree
   // ======================================================================
   //
@@ -569,6 +637,12 @@
         }</span>
         <span class="tname">${esc(entry.name)}</span>
         <span class="tsize">${entry.dir ? '' : fmtBytes(entry.size)}</span>
+        ${
+          entry.dir
+            ? `<button class="row-add" data-kind="file" title="New file in here">+</button>
+               <button class="row-add" data-kind="folder" title="New folder in here">&#8862;</button>`
+            : ''
+        }
         <button class="row-delete" title="Delete">${window.Icons.close}</button>
       </div>`);
     row.style.paddingLeft = `${8 + depth * 12}px`;
@@ -580,6 +654,25 @@
       e.stopPropagation();
       deleteEntry(entry);
     });
+
+    for (const add of row.querySelectorAll('.row-add')) {
+      add.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        // Creating inside a closed folder should show you where it went.
+        if (!EXPANDED.has(entry.path)) {
+          EXPANDED.add(entry.path);
+          row.querySelector('.twist').innerHTML = window.Icons.chevronDown;
+          row.querySelector('.ticon').innerHTML = window.FileIcons.forFolder(true);
+          kids.innerHTML = '';
+          try {
+            await renderDir(kids, entry.path, depth + 1);
+          } catch {
+            /* the inline input still works even if listing failed */
+          }
+        }
+        createEntry(entry.path, add.dataset.kind === 'folder', kids, depth + 1);
+      });
+    }
 
     row.addEventListener('click', async () => {
       if (!entry.dir) {
@@ -616,27 +709,76 @@
     return `${(n / 1048576).toFixed(1)}M`;
   }
 
-  /** Create a file or folder under *dir*. The name carries the extension. */
-  async function createEntry(dir, directory) {
-    const name = prompt(
-      directory
-        ? 'New folder name:'
-        : 'New file name (include the extension — main.py, index.html, notes.md):'
-    );
-    if (!name || !name.trim()) return;
-    try {
-      const res = await post('/api/fs/create', {
-        root: S.fileRoot,
-        path: dir === S.fileRoot ? name.trim() : `${dir}/${name.trim()}`,
-        directory,
+  /**
+   * Ask for a name inline, in the tree.
+   *
+   * Not `prompt()`: Electron removed it ("prompt() is and will not be
+   * supported"), so it throws rather than asking. An input row in the tree is
+   * what a file explorer should do anyway — you can see where the thing is
+   * about to land.
+   */
+  function askForName({ anchor, depth, directory, onName }) {
+    const row = el(`
+      <div class="tree-row tree-new" style="padding-left:${8 + depth * 12}px">
+        <span class="twist"></span>
+        <span class="ticon">${
+          directory ? window.FileIcons.forFolder(false) : window.FileIcons.forFile('x')
+        }</span>
+        <input class="tname-input" spellcheck="false" placeholder="${
+          directory ? 'folder name' : 'name.ext — main.py, index.html'
+        }" />
+      </div>`);
+    anchor.prepend(row);
+    const input = row.querySelector('.tname-input');
+    const icon = row.querySelector('.ticon');
+    let done = false;
+
+    const finish = (name) => {
+      if (done) return;
+      done = true;
+      row.remove();
+      if (name) onName(name);
+    };
+
+    // Show the icon the file will actually get, as you type the extension.
+    if (!directory) {
+      input.addEventListener('input', () => {
+        icon.innerHTML = window.FileIcons.forFile(input.value || 'x');
       });
-      toast(`created ${res.name}`);
-      if (dir !== S.fileRoot) EXPANDED.add(dir);
-      await showFiles();
-      if (!directory) openFile(res.path, res.name);
-    } catch (err) {
-      toast(`could not create: ${err.message}`, true);
     }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') finish(input.value.trim());
+      if (e.key === 'Escape') finish(null);
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => finish(input.value.trim()));
+    input.focus();
+  }
+
+  /** Create a file or folder under *dir*. The name carries the extension. */
+  function createEntry(dir, directory, anchor = null, depth = 0) {
+    const host = anchor || document.querySelector('#sidebar-scroll .tree');
+    if (!host) return;
+    askForName({
+      anchor: host,
+      depth,
+      directory,
+      onName: async (name) => {
+        try {
+          const res = await post('/api/fs/create', {
+            root: S.fileRoot,
+            path: dir === S.fileRoot ? name : `${dir}/${name}`,
+            directory,
+          });
+          toast(`created ${res.name}`);
+          if (dir !== S.fileRoot) EXPANDED.add(dir);
+          await showFiles();
+          if (!directory) openFile(res.path, res.name);
+        } catch (err) {
+          toast(`could not create: ${err.message}`, true);
+        }
+      },
+    });
   }
 
   async function deleteEntry(entry) {
@@ -732,7 +874,9 @@
         view: 'editor',
         payload: { path, text: data.text },
       });
+      S.openFilePath = path;
       await window.Editor.openFile(path, data.text);
+      refreshRunnable(path);
     } catch (err) {
       toast(`could not open file: ${err.message}`, true);
     }
@@ -1199,6 +1343,8 @@
     });
 
     $('btn-refresh').addEventListener('click', refresh);
+    $('btn-run-file').innerHTML = window.Icons.run;
+    $('btn-run-file').addEventListener('click', runOpenFile);
     $('btn-new-session').addEventListener('click', newSession);
     $('btn-send').addEventListener('click', sendChat);
     $('btn-run-terminal').addEventListener('click', runInTerminal);
@@ -1223,6 +1369,16 @@
     });
 
     window.addEventListener('keydown', (e) => {
+      // Cmd+Enter runs the open file — except in the composer, where it has
+      // always meant "send", and still does.
+      if (
+        e.key === 'Enter' &&
+        (e.metaKey || e.ctrlKey) &&
+        e.target !== $('composer-input')
+      ) {
+        e.preventDefault();
+        runOpenFile();
+      }
       if (e.key === '`' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         togglePanel();
