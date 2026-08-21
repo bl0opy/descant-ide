@@ -1112,6 +1112,14 @@
         const data = await api(
           `/api/loadout?repo=${encodeURIComponent(repo)}&probe=${window.Settings.get().probeMcp}`
         );
+        // The proxy's own state is a cheap read (no probing), so it rides along
+        // rather than owning a panel: residency is part of the loadout, not a
+        // separate idea.
+        try {
+          data.proxy = await api(`/api/proxy?repo=${encodeURIComponent(repo)}`);
+        } catch {
+          data.proxy = null;
+        }
         window.Panels.renderLoadout(host, data, {
           toggleMcp: async (name, enabled) => {
             await api('/api/loadout/mcp', {
@@ -1141,6 +1149,46 @@
             if (!confirm(`Remove ${name} from ${where}?`)) return;
             await post('/api/loadout/mcp/delete', { repo, name });
             toast(`removed ${name}`);
+            showLoadout();
+          },
+          refreshProxy: async () => {
+            host.innerHTML =
+              '<div class="inspector"><p class="muted">Probing every server for its tools…</p></div>';
+            const res = await post('/api/proxy/refresh', { repo });
+            toast(`indexed ${res.tools} tools across ${res.servers} servers`);
+            showLoadout();
+          },
+          activateGroup: async (name) => {
+            const res = await post('/api/proxy/activate', { repo, name });
+            toast(`${name} active · ${res.resident_tools} tools resident`);
+            showLoadout();
+          },
+          newGroup: async () => {
+            const name = prompt('Name this group (e.g. "debugging", "release")');
+            if (!name) return;
+            await post('/api/proxy/group', { repo, name, tools: {}, activate: true });
+            toast(`${name} created — pick the tools worth carrying`);
+            showLoadout();
+          },
+          setGroupTools: async (name, tools) => {
+            const res = await post('/api/proxy/group', { repo, name, tools });
+            toast(`${res.resident_tools} tools resident · ~${res.after_tokens} tokens/turn`);
+            showLoadout();
+          },
+          installProxy: async () => {
+            host.innerHTML =
+              '<div class="inspector"><p class="muted">Installing the proxy…</p></div>';
+            const res = await post('/api/proxy/install', { repo });
+            toast(
+              `proxy installed · detached ${res.detached.length} server(s) · ` +
+                `saving ~${res.saved_tokens} tokens per turn`
+            );
+            showLoadout();
+          },
+          uninstallProxy: async () => {
+            if (!confirm('Remove the proxy and re-attach the servers it fronts?')) return;
+            const res = await post('/api/proxy/uninstall', { repo, reattach: true });
+            toast(`proxy removed · re-attached ${res.reattached.join(', ') || 'nothing'}`);
             showLoadout();
           },
           previewConversion: async (name) => {

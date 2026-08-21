@@ -54,6 +54,8 @@ window.Panels = (() => {
       </div>`)
     );
 
+    renderResidency(wrap, data, handlers);
+
     // --- MCP servers ---------------------------------------------------
     wrap.appendChild(el('<h2>MCP servers</h2>'));
     if (!data.mcp_servers.length) {
@@ -533,5 +535,144 @@ window.Panels = (() => {
     });
   }
 
-  return { renderLoadout, renderConversionPreview, renderMining, renderLibrary };
+  /**
+   * Tool residency — the MCP proxy.
+   *
+   * Claude Code's switch is per *server*; cost is per *tool*. This section is
+   * where that mismatch gets resolved: pick the handful of tools worth carrying
+   * in every request, and everything else stays one `find_tool` call away
+   * instead of resident. A group is a residency list, not a restriction, which
+   * is why nothing here is ever described as disabling a tool.
+   */
+  function renderResidency(wrap, data, handlers) {
+    const p = data.proxy;
+    if (!p) return;
+
+    const servers = Object.keys(p.index || {});
+    const active = p.groups?.[p.active] || null;
+    const s = active || {};
+
+    wrap.appendChild(el('<h2>Tool residency</h2>'));
+
+    if (!servers.length) {
+      const empty = el(`
+        <div class="loadout-row">
+          <div class="loadout-main">
+            <div class="loadout-name">Nothing indexed yet</div>
+            <div class="loadout-desc">Index this repo's MCP servers to choose which
+              individual tools stay loaded. Detached servers are indexed too — that is
+              the point.</div>
+          </div>
+          <div class="loadout-actions"></div>
+        </div>`);
+      const btn = el('<button class="btn small">Index servers</button>');
+      btn.addEventListener('click', () => handlers.refreshProxy());
+      empty.querySelector('.loadout-actions').appendChild(btn);
+      wrap.appendChild(empty);
+      return;
+    }
+
+    wrap.appendChild(
+      el(`
+      <div class="stat-row">
+        <div class="stat${p.installed ? ' accent' : ''}">
+          <div class="stat-value">${s.resident_tools ?? 0}/${s.total_tools ?? 0}</div>
+          <div class="stat-label">tools resident</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">${fmtTokens(s.after_tokens || 0)}</div>
+          <div class="stat-label">via the proxy</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value">${fmtTokens(s.saved_tokens || 0)}</div>
+          <div class="stat-label">${p.installed ? 'saved every turn' : 'saving available'}</div>
+        </div>
+      </div>`)
+    );
+
+    // --- groups --------------------------------------------------------
+    const bar = el('<div class="group-bar"></div>');
+    for (const name of Object.keys(p.groups || {})) {
+      const b = el(
+        `<button class="btn small ${name === p.active ? '' : 'secondary'}">${esc(name)}</button>`
+      );
+      b.addEventListener('click', () => handlers.activateGroup(name));
+      bar.appendChild(b);
+    }
+    const add = el('<button class="btn small secondary">+ Group</button>');
+    add.addEventListener('click', () => handlers.newGroup());
+    bar.appendChild(add);
+
+    const spacer = el('<div class="group-actions"></div>');
+    const refresh = el('<button class="btn small secondary">Re-index</button>');
+    refresh.addEventListener('click', () => handlers.refreshProxy());
+    spacer.appendChild(refresh);
+    const install = el(
+      `<button class="btn small ${p.installed ? 'secondary danger' : ''}">${
+        p.installed ? 'Uninstall proxy' : 'Install proxy'
+      }</button>`
+    );
+    install.addEventListener('click', () =>
+      p.installed ? handlers.uninstallProxy() : handlers.installProxy()
+    );
+    spacer.appendChild(install);
+    bar.appendChild(spacer);
+    wrap.appendChild(bar);
+
+    // --- per-tool residency --------------------------------------------
+    const members = new Set();
+    const chosen = (active && active.tools) || {};
+    for (const [server, names] of Object.entries(chosen)) {
+      const all = (p.index[server] || []).map((t) => t.name);
+      const list = names === '*' || (Array.isArray(names) && names.includes('*')) ? all : names;
+      for (const n of list || []) members.add(server + '\u0000' + n);
+    }
+
+    for (const server of servers) {
+      const box = el(`
+        <div class="loadout-row">
+          <div class="loadout-main">
+            <div class="loadout-name">${esc(server)}
+              <span class="pill">${(p.index[server] || []).length} tools</span>
+            </div>
+            <div class="loadout-sub">on = loaded every turn · off = reachable via find_tool</div>
+          </div>
+          <div class="tool-list"></div>
+        </div>`);
+      const list = box.querySelector('.tool-list');
+      for (const tool of p.index[server] || []) {
+        const on = members.has(server + '\u0000' + tool.name);
+        const row = el(`
+          <div class="tool-list-row residency ${on ? '' : 'off'}">
+            <button class="toggle tiny ${on ? 'on' : ''}"><span></span></button>
+            <span class="tname">${esc(tool.name)}</span>
+            <span class="tcost">${fmtTokens(tool.token_cost)}</span>
+          </div>`);
+        row.querySelector('.toggle').addEventListener('click', () => {
+          const next = new Set(members);
+          const key = server + '\u0000' + tool.name;
+          if (on) next.delete(key);
+          else next.add(key);
+          const tools = {};
+          for (const k of next) {
+            const [srv, name] = k.split('\u0000');
+            (tools[srv] = tools[srv] || []).push(name);
+          }
+          handlers.setGroupTools(p.active, tools);
+        });
+        list.appendChild(row);
+      }
+      wrap.appendChild(box);
+    }
+
+    if (!p.installed) {
+      wrap.appendChild(
+        el(`<p class="muted">Installing registers one server called <code>descant</code>
+            and detaches the ones it fronts — leaving them attached would cost more,
+            not less. Uninstall puts back exactly what it took away.</p>`)
+      );
+    }
+  }
+
+  return { renderLoadout, renderResidency, renderConversionPreview, renderMining, renderLibrary };
 })();

@@ -1256,6 +1256,55 @@ textarea:focus {
   color: var(--fg-faint);
 }
 
+/* --- tool residency (the MCP proxy) -------------------------------------- */
+
+.group-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.group-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-3);
+}
+
+.tool-list-row.residency {
+  justify-content: flex-start;
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-2) 0;
+}
+
+.tool-list-row.residency.off {
+  opacity: 0.55;
+}
+
+.tool-list-row.residency .tname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toggle.tiny {
+  width: calc(var(--toggle-width) * 0.72);
+  height: calc(var(--toggle-height) * 0.72);
+  border-radius: var(--toggle-height);
+}
+
+.toggle.tiny span {
+  width: calc(var(--toggle-height) * 0.72 - 4px);
+  height: calc(var(--toggle-height) * 0.72 - 4px);
+}
+
+.toggle.tiny.on span {
+  transform: translateX(calc((var(--toggle-width) - var(--toggle-height)) * 0.72));
+}
+
 /* --- mining -------------------------------------------------------------- */
 
 .mine-card {
