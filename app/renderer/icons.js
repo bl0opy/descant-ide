@@ -41,8 +41,9 @@ window.Icons = (() => {
     chat: wrap(
       '<path d="M20 12a8 8 0 0 1-8 8H7l-3 2v-4.2A8 8 0 1 1 20 12z"/><path d="M8.5 11h7M8.5 14h4"/>'
     ),
-    // A filled play arrow, for "run this".
-    run: wrap('<path d="M8 5.5l9 6.5-9 6.5z" fill="currentColor" stroke="none"/>', 16),
+    // An outlined play arrow, for "run this". Outlined rather than solid so it
+    // reads as an affordance next to the wordmark instead of a status light.
+    run: wrap('<path d="M8 5.2l10 6.8-10 6.8z" stroke-width="1.8"/>', 20),
     check: wrap('<path d="M4 12l5 5L20 6"/>', 16),
     spark: wrap('<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>', 16),
   };

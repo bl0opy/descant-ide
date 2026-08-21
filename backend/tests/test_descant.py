@@ -739,6 +739,55 @@ def test_runner_quotes_paths_with_spaces():
         check("a path with a space is quoted, not split", "'" in res["command"])
 
 
+def test_saving_a_file_is_atomic_and_guarded():
+    """Editing was always possible; saving is the half that was missing."""
+    from fastapi import HTTPException
+
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "repo"
+        root.mkdir()
+        target = root / "main.py"
+        target.write_text("original\n")
+        (Path(td) / "outside.txt").write_text("untouched")
+
+        server.write_file(server.WriteFileBody(path=str(target), text="edited\n", root=str(root)))
+        check("the buffer reaches disk", target.read_text() == "edited\n")
+        check(
+            "no temp file is left behind",
+            sorted(p.name for p in root.iterdir()) == ["main.py"],
+        )
+
+        for escape in (str(Path(td) / "outside.txt"), "../outside.txt"):
+            try:
+                server.write_file(
+                    server.WriteFileBody(path=escape, text="pwned", root=str(root))
+                )
+            except HTTPException:
+                pass
+            else:
+                check(f"save to {escape} refused", False)
+        check("a save cannot escape the repo", True)
+        check("the outside file is unchanged", (Path(td) / "outside.txt").read_text() == "untouched")
+
+
+def test_path_guard_survives_a_symlinked_root():
+    """/tmp and /var are symlinks on macOS; a repo under one is still inside it."""
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        real = Path(td) / "real"
+        real.mkdir()
+        (real / "a.py").write_text("x")
+        link = Path(td) / "link"
+        link.symlink_to(real)
+
+        # Same directory reached through a symlink must still validate.
+        resolved = server._guard_path(str(link / "a.py"), str(link))
+        check("a path under a symlinked root is accepted", resolved == (real / "a.py").resolve())
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

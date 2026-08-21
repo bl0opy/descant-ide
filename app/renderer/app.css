@@ -1824,8 +1824,10 @@ body.resizing .xterm {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
+  margin-left: var(--space-2);
+  border: 1px solid var(--success);
   border-radius: var(--radius-sm);
   color: var(--success);
   -webkit-app-region: no-drag;
@@ -1833,12 +1835,14 @@ body.resizing .xterm {
 }
 
 #btn-run-file:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--success);
+  color: var(--bg-app);
 }
 
 #btn-run-file:disabled {
   color: var(--fg-faint);
-  opacity: 0.4;
+  border-color: var(--border-strong);
+  opacity: 0.45;
   cursor: default;
 }
 
@@ -1874,4 +1878,81 @@ body.resizing .xterm {
 
 .tree-row .row-add:hover {
   color: var(--accent);
+}
+
+/* Unsaved-changes marker on a tab. */
+.tab .dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex: 0 0 auto;
+}
+
+/* ==========================================================================
+   Context menus
+   ========================================================================== */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 190px;
+  padding: var(--space-2);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ctx-item:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--fg-inverse);
+}
+
+.ctx-item:hover:not(:disabled) .ctx-hint {
+  color: var(--fg-inverse);
+  opacity: 0.8;
+}
+
+.ctx-item:disabled {
+  color: var(--fg-faint);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ctx-item.danger {
+  color: var(--danger);
+}
+
+.ctx-item.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--fg-inverse);
+}
+
+.ctx-hint {
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+}
+
+.ctx-sep {
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: var(--border);
 }

@@ -128,6 +128,8 @@ window.Editor = (() => {
     return monaco ? monaco.languages.getLanguages().length : 0;
   }
 
+  let savedText = '';
+
   function init(hostEl) {
     host = hostEl;
   }
@@ -138,10 +140,11 @@ window.Editor = (() => {
     if (host) host.innerHTML = '';
   }
 
-  async function openFile(path, text) {
+  async function openFile(path, text, handlers = {}) {
     await load();
     disposeAll();
     currentPath = path;
+    savedText = text;
     editor = monaco.editor.create(host, {
       value: text,
       language: langFor(path),
@@ -156,7 +159,33 @@ window.Editor = (() => {
       scrollBeyondLastLine: false,
       renderWhitespace: 'selection',
     });
+
+    // Monaco consumes keydown before it reaches the window, so app shortcuts
+    // have to be registered *with* it or they simply never fire while the
+    // cursor is in a file — which is exactly when you want them.
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () =>
+      handlers.onRun?.()
+    );
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
+      handlers.onSave?.()
+    );
+
+    editor.onDidChangeModelContent(() => handlers.onDirty?.(isDirty()));
     return editor;
+  }
+
+  function isDirty() {
+    return Boolean(editor) && editor.getValue() !== savedText;
+  }
+
+  /** The buffer as it stands, for whoever is doing the writing. */
+  function currentText() {
+    return editor ? editor.getValue() : null;
+  }
+
+  /** Called after a successful write, so the dirty check has a new baseline. */
+  function markSaved(text) {
+    savedText = text;
   }
 
   /** Side-by-side diff — used to show what an agent edit changed. */
@@ -197,5 +226,8 @@ window.Editor = (() => {
     langFor,
     languageCount,
     current: () => currentPath,
+    currentText,
+    isDirty,
+    markSaved,
   };
 })();

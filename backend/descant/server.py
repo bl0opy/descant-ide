@@ -295,7 +295,11 @@ def _guard_path(target: str, root: str) -> Path:
     path = Path(target).expanduser()
     if not path.is_absolute():
         path = base / path
-    resolved = Path(os.path.normpath(str(path)))
+    # Resolve the target the same way as the base, or a repo living under a
+    # symlinked directory (/tmp and /var are symlinks on macOS) would fail the
+    # containment check even though it is plainly inside. Resolving also means a
+    # symlink pointing out of the repo is caught rather than followed.
+    resolved = path.resolve()
     if resolved != base and not resolved.is_relative_to(base):
         raise HTTPException(400, f"refusing to touch {resolved}: outside {base}")
     return resolved
@@ -369,6 +373,35 @@ def read_file(path: str, max_bytes: int = 512_000) -> dict:
         text = ""
         binary = True
     return {"path": str(p), "text": text, "binary": binary, "size": p.stat().st_size}
+
+
+class WriteFileBody(BaseModel):
+    path: str
+    text: str
+    root: str = ""
+
+
+@app.put("/api/file")
+def write_file(body: WriteFileBody) -> dict:
+    """Save the editor's contents.
+
+    Written through a temp file in the same directory and moved into place, so
+    an interrupted save cannot leave a half-written source file behind. When a
+    repo root is given the path is guarded against it, the same as every other
+    write in this file.
+    """
+    target = _guard_path(body.path, body.root) if body.root else Path(body.path).expanduser()
+    if target.exists() and target.is_dir():
+        raise HTTPException(400, f"{target} is a directory")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".descant-tmp")
+        tmp.write_text(body.text, encoding="utf-8")
+        tmp.replace(target)
+    except OSError as exc:
+        raise HTTPException(400, f"could not save: {exc}")
+    return {"path": str(target), "size": target.stat().st_size}
 
 
 # --------------------------------------------------------------------------

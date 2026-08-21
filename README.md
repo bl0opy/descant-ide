@@ -138,11 +138,23 @@ running with no window to show for it.
 does something deliberately different: it opens the terminal and executes what
 you typed as a shell command, verbatim.
 
+## Editing and saving
+
+The centre pane is Monaco, and it writes back: edit a file, `Cmd/Ctrl+S` saves
+it. A tab with unsaved changes carries an amber dot and asks before closing.
+Saves go through a temp file in the same directory and are moved into place, so
+an interrupted write cannot leave a half-written source file behind.
+
 ## Running the open file
 
 The **▶ arrow in the title bar** runs whatever the editor is showing —
-`Cmd/Ctrl+Enter` anywhere outside the composer does the same. Hover it to see the
-exact command first.
+`Cmd/Ctrl+Enter` does the same. Hover it to see the exact command first.
+
+Shortcuts are real menu accelerators (**Run** and **File** in the menu bar), not
+renderer key handlers: Monaco and xterm both swallow keystrokes before the page
+sees them, so a binding made in the page would work everywhere *except* inside a
+file, which is where you need it. In the composer `Cmd/Ctrl+Enter` still means
+send.
 
 The interpreter comes from the *repo*, not a fixed table: a project with a
 `.venv` gets its own python rather than whatever is first on `PATH`, and a Rust
@@ -150,6 +162,18 @@ file inside a crate is built with `cargo run` from the crate root instead of
 being compiled alone. The command is typed into the terminal rather than run in a
 hidden subprocess, so you can see it, edit it, and re-run it. A file type with no
 runner leaves the arrow disabled and says why.
+
+## Right-click menus
+
+Two-finger tap (or right-click) gets a menu wherever one is useful:
+
+| Where | What you get |
+|---|---|
+| **File tree** | Open / Run, New File / New Folder on a folder, Copy Path, Copy Name, Reveal in Terminal, Delete |
+| **Session row** | Open, Copy Session ID, Delete Session |
+| **Tab** | Close, Close Others, Close All |
+| **Editor** | Save, Run File, Copy Path |
+| **Terminal** | Paste, Clear |
 
 ## Panes
 
@@ -185,6 +209,7 @@ app/
   renderer/chat.js   the chat controller — streaming, and the approval cards
   renderer/fileicons.js  Catppuccin-palette filetype icons
   renderer/resize.js     draggable splitters
+  renderer/contextmenu.js  right-click menus
   renderer/*.js      vanilla JS, no framework
 fixtures/
   generate.py        regenerates the synthetic transcripts

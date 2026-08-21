@@ -9,7 +9,7 @@
 // Everything else — transcript parsing, context analysis, spawning `claude` —
 // lives in Python and is reached over HTTP/WebSocket.
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const http = require('node:http');
@@ -186,6 +186,61 @@ function createWindow() {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// application menu
+// ---------------------------------------------------------------------------
+//
+// The menu exists mainly for its accelerators. A shortcut bound in the renderer
+// only fires when the renderer sees the keydown, and Monaco and xterm both eat
+// keys before that — so Cmd+Enter would work on the welcome screen and nowhere
+// useful. A menu accelerator fires regardless of what has focus.
+function send(action) {
+  return () => {
+    if (win && !win.isDestroyed()) win.webContents.send('menu:action', action);
+  };
+}
+
+function buildMenu() {
+  const isMac = process.platform === 'darwin';
+  const template = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save-file') },
+        { type: 'separator' },
+        { label: 'New Session', accelerator: 'CmdOrCtrl+N', click: send('new-session') },
+        { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
+        ...(isMac ? [] : [{ type: 'separator' }, { role: 'quit' }]),
+      ],
+    },
+    { role: 'editMenu' },
+    {
+      label: 'Run',
+      submenu: [
+        { label: 'Run File', accelerator: 'CmdOrCtrl+Return', click: send('run-file') },
+        { label: 'Toggle Terminal', accelerator: 'CmdOrCtrl+`', click: send('toggle-terminal') },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 // ---------------------------------------------------------------------------
 // node-pty terminals
 // ---------------------------------------------------------------------------
@@ -298,6 +353,7 @@ app.whenReady().then(async () => {
   const up = await waitForBackend();
   if (!up) logBackend('backend did not answer /api/health in time');
   createWindow();
+  buildMenu();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

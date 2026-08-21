@@ -170,6 +170,14 @@
             )
           : openSession(it.id);
       });
+      if (it.type === 'session') {
+        window.ContextMenu.attach(row, () => [
+          { label: 'Open', action: () => openSession(it.id) },
+          { label: 'Copy Session ID', action: () => navigator.clipboard.writeText(it.id) },
+          { separator: true },
+          { label: 'Delete Session', danger: true, action: () => deleteSession(it.id, it.label) },
+        ]);
+      }
       list.appendChild(row);
     }
     wrap.appendChild(list);
@@ -186,7 +194,9 @@
     for (const t of S.tabs) {
       const el = document.createElement('div');
       el.className = 'tab' + (t.key === S.activeTab ? ' active' : '');
-      el.innerHTML = `<span>${esc(t.label)}</span><span class="close">${window.Icons.close}</span>`;
+      el.innerHTML = `<span>${esc(t.label)}</span>${
+        t.dirty ? '<span class="dirty" title="Unsaved changes"></span>' : ''
+      }<span class="close">${window.Icons.close}</span>`;
       el.addEventListener('click', (e) => {
         if (e.target.closest('.close')) {
           closeTab(t.key);
@@ -194,6 +204,20 @@
         }
         activateTab(t.key);
       });
+      window.ContextMenu.attach(el, () => [
+        { label: 'Close', hint: `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+W`,
+          action: () => closeTab(t.key) },
+        {
+          label: 'Close Others',
+          disabled: S.tabs.length < 2,
+          action: () => {
+            for (const other of [...S.tabs]) if (other.key !== t.key) closeTab(other.key);
+          },
+        },
+        { label: 'Close All', action: () => {
+            for (const other of [...S.tabs]) closeTab(other.key);
+          } },
+      ]);
       host.appendChild(el);
     }
   }
@@ -250,6 +274,9 @@
   function closeTab(key) {
     const i = S.tabs.findIndex((t) => t.key === key);
     if (i < 0) return;
+    if (S.tabs[i].dirty && !confirm(`${S.tabs[i].label} has unsaved changes. Close anyway?`)) {
+      return;
+    }
     if (key.startsWith('chat:')) disposeChat(key.slice(5));
     S.tabs.splice(i, 1);
     activateTab(S.tabs.length ? S.tabs[Math.max(0, i - 1)].key : null);
@@ -477,6 +504,45 @@
     togglePanel(true);
   }
 
+  /** Mark a tab as having unsaved changes, without redrawing the whole bar. */
+  function markTabDirty(key, dirty) {
+    const tab = S.tabs.find((t) => t.key === key);
+    if (!tab || tab.dirty === dirty) return;
+    tab.dirty = dirty;
+    renderTabs();
+  }
+
+  /**
+   * Write the editor's buffer back to disk.
+   *
+   * Monaco was already editable, but nothing ever saved — you could type into a
+   * file all day and lose it on the next tab switch. This is that missing half.
+   */
+  async function saveOpenFile() {
+    const path = S.openFilePath;
+    if (!path || !window.Editor.current()) {
+      toast('no file open to save');
+      return;
+    }
+    if (!window.Editor.isDirty()) {
+      toast('no changes to save');
+      return;
+    }
+    const text = window.Editor.currentText();
+    try {
+      await api('/api/file', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path, text, root: S.fileRoot || '' }),
+      });
+      window.Editor.markSaved(text);
+      markTabDirty(`file:${path}`, false);
+      toast(`saved ${path.split('/').pop()}`);
+    } catch (err) {
+      toast(`could not save: ${err.message}`, true);
+    }
+  }
+
   // ======================================================================
   // running the open file
   // ======================================================================
@@ -696,10 +762,47 @@
       }
     });
 
+    window.ContextMenu.attach(row, () => [
+      entry.dir
+        ? { label: 'New File…', action: () => createEntry(entry.path, false, kids, depth + 1) }
+        : { label: 'Open', action: () => openFile(entry.path, entry.name) },
+      entry.dir
+        ? { label: 'New Folder…', action: () => createEntry(entry.path, true, kids, depth + 1) }
+        : {
+            label: 'Run',
+            hint: `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+↵`,
+            action: async () => {
+              await openFile(entry.path, entry.name);
+              runOpenFile();
+            },
+          },
+      { separator: true },
+      { label: 'Copy Path', action: () => navigator.clipboard.writeText(entry.path) },
+      { label: 'Copy Name', action: () => navigator.clipboard.writeText(entry.name) },
+      { label: 'Reveal in Terminal', action: () => revealInTerminal(entry) },
+      { separator: true },
+      { label: 'Delete', danger: true, action: () => deleteEntry(entry) },
+    ]);
+
     wrap.appendChild(row);
     wrap.appendChild(kids);
     if (isOpen) await renderDir(kids, entry.path, depth + 1);
     return wrap;
+  }
+
+  /** Drop the terminal into a folder (or a file's folder). */
+  async function revealInTerminal(entry) {
+    const dir = entry.dir ? entry.path : entry.path.replace(/\/[^/]+$/, '');
+    togglePanel(true);
+    const opened = await window.Term.open(S.fileRoot || dir);
+    if (opened && opened.ok === false) {
+      toast(opened.error, true);
+      return;
+    }
+    setTimeout(
+      () => window.Term.send(S.fileRoot || dir, `cd ${JSON.stringify(dir)}`),
+      opened && opened.reused ? 0 : 400
+    );
   }
 
   function fmtBytes(n) {
@@ -875,7 +978,11 @@
         payload: { path, text: data.text },
       });
       S.openFilePath = path;
-      await window.Editor.openFile(path, data.text);
+      await window.Editor.openFile(path, data.text, {
+        onRun: runOpenFile,
+        onSave: saveOpenFile,
+        onDirty: (dirty) => markTabDirty(`file:${path}`, dirty),
+      });
       refreshRunnable(path);
     } catch (err) {
       toast(`could not open file: ${err.message}`, true);
@@ -1344,6 +1451,49 @@
 
     $('btn-refresh').addEventListener('click', refresh);
     $('btn-run-file').innerHTML = window.Icons.run;
+    const handleMenu = (action) => {
+      // A menu accelerator fires no matter what has focus, which is the whole
+      // reason it works inside Monaco — but it also means Cmd+Enter would run a
+      // file while you are mid-sentence in the composer. In the composer it
+      // keeps meaning "send".
+      if (action === 'run-file') {
+        if (document.activeElement === $('composer-input')) sendChat();
+        else runOpenFile();
+      }
+      else if (action === 'save-file') saveOpenFile();
+      else if (action === 'new-session') newSession();
+      else if (action === 'toggle-terminal') togglePanel();
+      else if (action === 'close-tab' && S.activeTab) closeTab(S.activeTab);
+    };
+    window.descant.onMenu(handleMenu);
+
+    // The editor gets its own menu; Monaco's built-in one is replaced so Save
+    // and Run are where you expect them.
+    window.ContextMenu.attach($('monaco-host'), () => {
+      if (!S.openFilePath) return null;
+      const mod = navigator.platform.includes('Mac') ? '⌘' : 'Ctrl';
+      return [
+        { label: 'Save', hint: `${mod}+S`, disabled: !window.Editor.isDirty(), action: saveOpenFile },
+        { label: 'Run File', hint: `${mod}+↵`, action: runOpenFile },
+        { separator: true },
+        { label: 'Copy Path', action: () => navigator.clipboard.writeText(S.openFilePath) },
+      ];
+    });
+
+    // In the terminal, the useful menu is the shell's clipboard, not ours.
+    window.ContextMenu.attach($('terminal-host'), () => [
+      {
+        label: 'Paste',
+        action: async () => {
+          const text = await navigator.clipboard.readText();
+          const cwd = S.fileRoot || $('composer-target').value;
+          if (text) window.Term.send(cwd, text.replace(/\n$/, ''));
+        },
+      },
+      { label: 'Clear', action: () => window.Term.send(S.fileRoot || $('composer-target').value, 'clear') },
+    ]);
+    // Exposed so the headless checks can exercise the same path the menu uses.
+    window.__menuHandler = handleMenu;
     $('btn-run-file').addEventListener('click', runOpenFile);
     $('btn-new-session').addEventListener('click', newSession);
     $('btn-send').addEventListener('click', sendChat);
@@ -1369,24 +1519,8 @@
     });
 
     window.addEventListener('keydown', (e) => {
-      // Cmd+Enter runs the open file — except in the composer, where it has
-      // always meant "send", and still does.
-      if (
-        e.key === 'Enter' &&
-        (e.metaKey || e.ctrlKey) &&
-        e.target !== $('composer-input')
-      ) {
-        e.preventDefault();
-        runOpenFile();
-      }
-      if (e.key === '`' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        togglePanel();
-      }
-      if (e.key === 'w' && (e.ctrlKey || e.metaKey) && S.activeTab) {
-        e.preventDefault();
-        closeTab(S.activeTab);
-      }
+      // Cmd+Enter, Cmd+S, Cmd+` and Cmd+W are menu accelerators now (see
+      // buildMenu in main.js); binding them here too would fire them twice.
     });
 
     window.descant.onBackendExternal((url) => {
