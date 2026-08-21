@@ -42,12 +42,17 @@ to either for machine-readable output.
 
 ## What you're looking at
 
-- **Left rail** — chat, sessions, file explorer, terminal toggle.
-- **Sidebar** — sessions grouped by repo. The dot is the session's state:
+- **Left rail** — sessions, file explorer, terminal toggle.
+- **Sidebar** — sessions grouped by repo. **New** starts a fresh conversation;
+  hovering a session reveals a delete button (its transcript is the only record,
+  so it asks first). The **Explorer** view is a real folder tree with filetype
+  icons, and can create and delete files of any type. The dot is the session's state:
   green spinner = running, grey = idle, amber = waiting on you, red = failed.
 - **Center** — tabs. Opening a session opens its context breakdown; opening a
   file opens Monaco.
-- **Right** — the agent log. Click any tool call to expand its input and result.
+- **Right** — the chat. You talk to Claude Code here; opening a session from the
+  sidebar swaps it for that session's transcript, and **Back to chat** returns.
+  Click any tool call to expand its input and result.
 - **Bottom** — a real shell (`` Ctrl+` ``) rooted in the open session's repo.
   This is where live sessions actually run.
 
@@ -99,8 +104,7 @@ replacing, never silently.
 
 ## Chat
 
-The speech-bubble icon in the activity bar opens a **conversation with Claude
-Code inside the app** — not a terminal hosting the CLI, and not a transcript you
+**The agent panel on the right is the conversation** — Claude Code inside the app — not a terminal hosting the CLI, and not a transcript you
 watch after the fact. You type, the reply streams in, tool calls appear inline
 and expand, and the conversation keeps its context across turns.
 
@@ -128,11 +132,15 @@ is still never passed; every approval is a specific rule a person clicked.
 The backend follows the app down, so quitting never leaves a `claude` process
 running with no window to show for it.
 
-## Running a session in the terminal instead
+**Send** talks to Claude (`Cmd/Ctrl+Enter` works too). **Run** does something
+deliberately different: it opens the terminal and executes what you typed as a
+shell command, verbatim. Keeping those two obviously separate is why there are
+two buttons.
 
-Chat is not the only way in. To start a live session in the real CLI: pick the
-target repo in the dropdown at the bottom right, type a prompt, hit **Run** (or
-`Cmd/Ctrl+Enter`).
+## Panes
+
+Every boundary is draggable — sidebar, agent panel, and the terminal's height.
+Sizes persist across launches; double-click a splitter to reset it.
 
 **Run opens `claude` in the terminal panel** — the real interactive CLI, not a
 headless subprocess. That means permission prompts appear in the terminal and
@@ -160,7 +168,9 @@ backend/descant/     the brain — everything below is a thin client over it
 app/
   main.js            Electron main: supervises the backend, owns node-pty
   renderer/theme.css EVERY colour and spacing value in the app
-  renderer/chat.js   the chat view — streaming, and the approval cards
+  renderer/chat.js   the chat controller — streaming, and the approval cards
+  renderer/fileicons.js  Catppuccin-palette filetype icons
+  renderer/resize.js     draggable splitters
   renderer/*.js      vanilla JS, no framework
 fixtures/
   generate.py        regenerates the synthetic transcripts

@@ -1751,3 +1751,67 @@ textarea:focus {
   color: var(--fg-faint);
   padding: var(--space-2) 0;
 }
+
+/* ==========================================================================
+   Splitters
+   ========================================================================== */
+
+.splitter {
+  position: absolute;
+  z-index: 20;
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+/* A 5px target that reads as a 1px line — easy to grab, invisible until you do. */
+.splitter-x {
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+}
+
+/* This one sits in the centre column's flow, right above the terminal, so it
+   is relative rather than absolute — an absolute splitter would position
+   against #body and span the whole window. */
+.splitter-y {
+  position: relative;
+  height: 5px;
+  margin-bottom: -5px;
+  flex: 0 0 auto;
+  cursor: row-resize;
+}
+
+.splitter:hover,
+.splitter.dragging {
+  background: var(--accent);
+}
+
+#splitter-sidebar {
+  left: calc(var(--activity-bar-width) + var(--sidebar-width) - 2px);
+}
+
+#splitter-agent {
+  right: calc(var(--agent-panel-width) - 2px);
+}
+
+#body.sidebar-hidden #splitter-sidebar,
+#body.agent-hidden #splitter-agent,
+#splitter-panel:has(+ #panel.hidden) {
+  display: none;
+}
+
+#body {
+  position: relative;
+}
+
+/* While dragging, nothing else should react to the pointer. */
+body.resizing {
+  cursor: inherit;
+  user-select: none;
+}
+
+body.resizing iframe,
+body.resizing .xterm {
+  pointer-events: none;
+}

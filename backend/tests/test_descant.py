@@ -611,6 +611,82 @@ def test_remembered_rules_land_where_claude_code_reads_them():
         check("and are not duplicated", allow.count("Bash(pytest:*)") == 1)
 
 
+def test_file_tree_lists_one_level_with_dirs_first():
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "src").mkdir()
+        (root / "src" / "deep").mkdir()
+        (root / "node_modules").mkdir()
+        (root / "zebra.py").write_text("x")
+        (root / "alpha.md").write_text("y")
+
+        listing = server.list_files(str(root))
+        names = [e["name"] for e in listing["entries"]]
+        check("directories come first", names[0] == "src")
+        check("files follow, alphabetically", names[1:] == ["alpha.md", "zebra.py"])
+        check("node_modules is not listed", "node_modules" not in names)
+        check(
+            "nothing below this level is walked",
+            "deep" not in names and all(e["name"] != "deep" for e in listing["entries"]),
+        )
+        nested = server.list_files(str(root / "src"))
+        check("expanding a directory lists its children", [e["name"] for e in nested["entries"]] == ["deep"])
+
+
+def test_file_writes_cannot_escape_the_repo():
+    """Every create/delete goes through one guard; it has to fail closed."""
+    from fastapi import HTTPException
+
+    from descant import server
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "repo"
+        root.mkdir()
+        (Path(td) / "secret.txt").write_text("do not touch")
+
+        for escape in ("../secret.txt", "/etc/passwd", "sub/../../secret.txt"):
+            try:
+                server.create_entry(server.CreateFileBody(root=str(root), path=escape))
+            except HTTPException:
+                pass
+            else:
+                check(f"{escape} refused", False)
+        check("traversal and absolute escapes are refused", True)
+        check("the file outside was untouched", (Path(td) / "secret.txt").read_text() == "do not touch")
+
+        made = server.create_entry(
+            server.CreateFileBody(root=str(root), path="src/main.py", content="print(1)\n")
+        )
+        check("nested creates make their parents", Path(made["path"]).is_file())
+        check("any extension is allowed", made["name"] == "main.py")
+
+        try:
+            server.create_entry(server.CreateFileBody(root=str(root), path="src/main.py"))
+        except HTTPException:
+            check("creating over an existing file is refused", True)
+        else:
+            check("creating over an existing file is refused", False)
+
+        try:
+            server.delete_entry(server.DeleteFileBody(root=str(root), path="src"))
+        except HTTPException:
+            check("a non-empty folder is not deleted by accident", True)
+        else:
+            check("a non-empty folder is not deleted by accident", False)
+
+        server.delete_entry(server.DeleteFileBody(root=str(root), path="src", recursive=True))
+        check("recursive delete removes it", not (root / "src").exists())
+
+        try:
+            server.delete_entry(server.DeleteFileBody(root=str(root), path="."))
+        except HTTPException:
+            check("the repo itself cannot be deleted", True)
+        else:
+            check("the repo itself cannot be deleted", False)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -1185,6 +1185,12 @@
     window.Editor.init($('monaco-host'));
 
     renderActivityBar();
+    window.Resize.init({
+      onLayout: () => {
+        window.Editor.layout();
+        window.Term.fitActive();
+      },
+    });
     await refresh();
     // The panel is a conversation by default; opening a session switches it to
     // that session's transcript, and "Back to chat" returns.
