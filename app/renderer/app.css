@@ -1953,3 +1953,93 @@ body.resizing .xterm {
   margin: var(--space-2) 0;
   background: var(--border);
 }
+
+/* ==========================================================================
+   Settings
+   ========================================================================== */
+
+.set-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.set-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.set-name {
+  font-size: var(--text-sm);
+  color: var(--fg-strong);
+}
+
+.set-help {
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+.set-control {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.set-select,
+.set-number {
+  background: var(--bg-input);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-xs);
+  outline: none;
+}
+
+.set-number {
+  width: 5rem;
+}
+
+.set-select:focus,
+.set-number:focus {
+  border-color: var(--border-focus);
+}
+
+.set-fact {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding: var(--space-2) 0;
+  font-size: var(--text-xs);
+}
+
+.set-fact-name {
+  width: 8rem;
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+}
+
+.set-fact-value {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.set-fact-env {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  color: var(--fg-faint);
+  opacity: 0.7;
+}
+
+.btn.small.danger {
+  color: var(--danger);
+}

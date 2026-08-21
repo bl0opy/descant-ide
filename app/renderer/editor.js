@@ -129,6 +129,7 @@ window.Editor = (() => {
   }
 
   let savedText = '';
+  let fontSize = 12;
 
   function init(hostEl) {
     host = hostEl;
@@ -152,7 +153,7 @@ window.Editor = (() => {
       readOnly: false,
       automaticLayout: true,
       minimap: { enabled: true },
-      fontSize: 12,
+      fontSize,
       fontFamily: getComputedStyle(document.documentElement)
         .getPropertyValue('--font-mono')
         .trim(),
@@ -200,7 +201,7 @@ window.Editor = (() => {
       automaticLayout: true,
       readOnly: true,
       renderSideBySide: true,
-      fontSize: 12,
+      fontSize,
       fontFamily: getComputedStyle(document.documentElement)
         .getPropertyValue('--font-mono')
         .trim(),
@@ -210,6 +211,13 @@ window.Editor = (() => {
       modified: monaco.editor.createModel(after, lang),
     });
     return diffEditor;
+  }
+
+  /** Font size is a setting, so it has to reach a live editor too. */
+  function setFontSize(px) {
+    fontSize = px || fontSize;
+    editor?.updateOptions({ fontSize });
+    diffEditor?.updateOptions({ fontSize });
   }
 
   function layout() {
@@ -223,6 +231,7 @@ window.Editor = (() => {
     openFile,
     openDiff,
     layout,
+    setFontSize,
     langFor,
     languageCount,
     current: () => currentPath,

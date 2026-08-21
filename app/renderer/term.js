@@ -20,6 +20,7 @@ window.Term = (() => {
   let host = null;
   let activeId = null;
   let wired = false;
+  let fontSize = 12;
 
   // Colours are read out of theme.css so the terminal restyles with everything
   // else rather than carrying its own hardcoded palette.
@@ -82,7 +83,7 @@ window.Term = (() => {
       fontFamily: getComputedStyle(document.documentElement)
         .getPropertyValue('--font-mono')
         .trim(),
-      fontSize: 12,
+      fontSize,
       cursorBlink: true,
       allowProposedApi: true,
       theme: themeFromCss(),
@@ -126,6 +127,13 @@ window.Term = (() => {
     }
   }
 
+  /** Restyle every open terminal; xterm needs a refit after a size change. */
+  function setFontSize(px) {
+    fontSize = px || fontSize;
+    for (const s of sessions.values()) s.term.options.fontSize = fontSize;
+    fitActive();
+  }
+
   function available() {
     return Boolean(Terminal);
   }
@@ -143,5 +151,14 @@ window.Term = (() => {
     sessions.get(activeId)?.term.focus();
   }
 
-  return { init, open, send, focus, fitActive, available, loadError: () => loadError };
+  return {
+    init,
+    open,
+    send,
+    focus,
+    fitActive,
+    setFontSize,
+    available,
+    loadError: () => loadError,
+  };
 })();

@@ -675,7 +675,9 @@
   /** Render one directory's children into *container*, indented by *depth*. */
   async function renderDir(container, dir, depth) {
     const data = await api(`/api/files?path=${encodeURIComponent(dir)}`);
+    const showHidden = window.Settings.get().showHidden;
     for (const entry of data.entries) {
+      if (!showHidden && entry.name.startsWith('.')) continue;
       container.appendChild(await renderEntry(entry, depth));
     }
     if (data.truncated) {
@@ -1000,6 +1002,7 @@
     { id: 'mining', icon: 'mining', title: 'Mined workflows', onSelect: showMining },
     { id: 'library', icon: 'library', title: 'Capability library', onSelect: showLibrary },
     { id: 'terminal', icon: 'terminal', title: 'Terminal', onSelect: togglePanel },
+    { id: 'settings', icon: 'settings', title: 'Settings', onSelect: showSettings },
   ];
 
   // ======================================================================
@@ -1024,7 +1027,9 @@
     openPanelTab('loadout:' + repo, `Loadout · ${repo.split('/').pop()}`, async (host) => {
       host.innerHTML = '<div class="inspector"><p class="muted">Probing MCP servers…</p></div>';
       try {
-        const data = await api(`/api/loadout?repo=${encodeURIComponent(repo)}`);
+        const data = await api(
+          `/api/loadout?repo=${encodeURIComponent(repo)}&probe=${window.Settings.get().probeMcp}`
+        );
         window.Panels.renderLoadout(host, data, {
           toggleMcp: async (name, enabled) => {
             await api('/api/loadout/mcp', {
@@ -1191,7 +1196,10 @@
   async function chatFor(cwd) {
     const existing = CHATS.get(cwd);
     if (existing) return existing;
-    const chat = await post('/api/chats', { repo: cwd, permission_mode: $('chat-mode').value });
+    const chat = await post('/api/chats', {
+      repo: cwd,
+      permission_mode: window.Settings.get().permissionMode,
+    });
     const handle = window.Chat.attach({
       chat,
       els: { log: $('agent-log') },
@@ -1315,6 +1323,42 @@
     stopRun(); // a terminal session is stopped with Ctrl-C, as before
   }
 
+  async function showSettings() {
+    openPanelTab('settings', 'Settings', (host) => {
+      window.Settings.render(host, {
+        config: S.config || {},
+        onResetLayout: () => {
+          window.Resize.reset();
+          toast('pane sizes reset');
+        },
+        onClearChats: async () => {
+          const open = [...CHATS.keys()];
+          if (!open.length) {
+            toast('no chats open');
+            return;
+          }
+          if (!confirm(`Close ${open.length} conversation${open.length === 1 ? '' : 's'}?`)) return;
+          for (const cwd of open) {
+            const handle = CHATS.get(cwd);
+            handle.dispose();
+            CHATS.delete(cwd);
+            post(`/api/chats/${handle.meta.chat_id}/close`, {}).catch(() => {});
+          }
+          S.chatCwd = null;
+          $('agent-log').innerHTML = '';
+          toast(`closed ${open.length}`);
+        },
+      });
+    });
+  }
+
+  /** Push settings that other modules own into those modules. */
+  function applySettings(cfg) {
+    window.Editor.setFontSize?.(cfg.fontSize);
+    window.Term.setFontSize?.(cfg.fontSize);
+    if (S.activeView === 'files') showFiles();
+  }
+
   async function showLibrary(query = '') {
     openPanelTab('library', 'Capability library', async (host) => {
       host.innerHTML = '<div class="inspector"><p class="muted">Indexing…</p></div>';
@@ -1435,6 +1479,7 @@
     window.Term.init($('terminal-host'));
     window.Editor.init($('monaco-host'));
 
+    applySettings(window.Settings.init(applySettings));
     renderActivityBar();
     window.Resize.init({
       onLayout: () => {

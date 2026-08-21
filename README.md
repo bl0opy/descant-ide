@@ -163,6 +163,15 @@ being compiled alone. The command is typed into the terminal rather than run in 
 hidden subprocess, so you can see it, edit it, and re-run it. A file type with no
 runner leaves the arrow disabled and says why.
 
+## Settings
+
+The gear at the bottom of the activity bar. Everything in it is wired to
+something real — default permission mode for new chats, editor and terminal font
+size, whether the explorer shows dotfiles, and whether MCP servers are probed
+(measuring costs a process per server, so it can be turned off). It also lists
+the environment variables actually in effect, and can reset pane sizes or close
+every live conversation at once.
+
 ## Right-click menus
 
 Two-finger tap (or right-click) gets a menu wherever one is useful:
@@ -210,6 +219,7 @@ app/
   renderer/fileicons.js  Catppuccin-palette filetype icons
   renderer/resize.js     draggable splitters
   renderer/contextmenu.js  right-click menus
+  renderer/settings.js     settings, persisted locally
   renderer/*.js      vanilla JS, no framework
 fixtures/
   generate.py        regenerates the synthetic transcripts

@@ -84,7 +84,21 @@ window.Resize = (() => {
     });
   }
 
+  /** Put every pane back to the stylesheet's default. */
+  function reset() {
+    for (const name of Object.keys(LIMITS)) root.style.removeProperty(name);
+    try {
+      localStorage.removeItem(KEY);
+    } catch {
+      /* nothing to clear */
+    }
+    onLayoutRef?.();
+  }
+
+  let onLayoutRef = null;
+
   function init({ onLayout } = {}) {
+    onLayoutRef = onLayout;
     restore();
 
     const body = document.getElementById('body');
@@ -126,5 +140,5 @@ window.Resize = (() => {
     });
   }
 
-  return { init };
+  return { init, reset };
 })();

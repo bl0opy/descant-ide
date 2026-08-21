@@ -44,6 +44,12 @@ window.Icons = (() => {
     // An outlined play arrow, for "run this". Outlined rather than solid so it
     // reads as an affordance next to the wordmark instead of a status light.
     run: wrap('<path d="M8 5.2l10 6.8-10 6.8z" stroke-width="1.8"/>', 20),
+    // Settings: a gear.
+    settings: wrap(
+      '<circle cx="12" cy="12" r="3.2"/>' +
+        '<path d="M12 3.4v2.2M12 18.4v2.2M3.4 12h2.2M18.4 12h2.2' +
+        'M6 6l1.6 1.6M16.4 16.4L18 18M18 6l-1.6 1.6M7.6 16.4L6 18"/>'
+    ),
     check: wrap('<path d="M4 12l5 5L20 6"/>', 16),
     spark: wrap('<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>', 16),
   };
