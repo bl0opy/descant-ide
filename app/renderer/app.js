@@ -1080,9 +1080,17 @@
   const ACTIVITIES = [
     { id: 'sessions', icon: 'sessions', title: 'Sessions', onSelect: showSessions },
     { id: 'files', icon: 'files', title: 'Explorer', onSelect: showFiles },
-    { id: 'loadout', icon: 'loadout', title: 'Tool loadout', onSelect: showLoadout },
-    { id: 'mining', icon: 'mining', title: 'Mined workflows', onSelect: showMining },
-    { id: 'library', icon: 'library', title: 'Capability library', onSelect: showLibrary },
+    // PARKED (thesis realignment, Aug 2026) --------------------------------
+    // These three panels are the MCP-compression product: tool loadout, the
+    // MCP->skill converter, tool residency/proxy, workflow mining, capability
+    // search. They all work and they all still have passing tests -- they are
+    // parked, not deleted, because the bet changed, not the code quality.
+    // See IDEAS.md. Restore by uncommenting these three lines; every function
+    // and endpoint behind them is untouched.
+    // { id: 'loadout', icon: 'loadout', title: 'Tool loadout', onSelect: showLoadout },
+    // { id: 'mining', icon: 'mining', title: 'Mined workflows', onSelect: showMining },
+    // { id: 'library', icon: 'library', title: 'Capability library', onSelect: showLibrary },
+    // ----------------------------------------------------------------------
     { id: 'terminal', icon: 'terminal', title: 'Terminal', onSelect: togglePanel },
     { id: 'settings', icon: 'settings', title: 'Settings', onSelect: showSettings },
   ];
