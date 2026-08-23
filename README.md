@@ -1,8 +1,18 @@
 # Descant
 
-A desktop IDE built around Claude Code. It reads the session transcripts Claude
-Code already writes, shows you where each session's context window actually
-went, and lets you start and watch live sessions.
+A desktop IDE built around Claude Code, for people who run more than one agent
+at a time.
+
+Claude Code tells you about the session in front of you. `/cost` is per-session,
+`/context` estimates what MCP costs you, and neither has anything to say about
+the other four sessions you have running across three repos. Descant reads the
+transcripts Claude Code already writes — every repo, live, including sessions
+you started in some other terminal — and measures what they're actually
+spending: system prompt, tool schemas, MCP schemas, skill listings,
+conversation. Measured by spawning the servers and counting, not estimated.
+
+Today that's per-session and honest about it. The direction is the fleet view —
+see `IDEAS.md` for what's built versus what that thesis still owes.
 
 ## Run it
 
@@ -112,6 +122,11 @@ cost is never spread evenly across a server: it is three fat schemas out of
 twenty tools. Descant closes that gap with a proxy — one stdio server called
 `descant` that fronts every real server for the repo and exposes only the tools
 in the **active group**.
+
+The token saving is the obvious half. The half that matters longer is that every
+tool call now goes through one place we own, which is the only way to learn which
+tools a repo genuinely uses, which resident ones are dead weight, and what a
+given server actually costs you.
 
 Nothing becomes unavailable. Alongside the group it always exposes two tools:
 
