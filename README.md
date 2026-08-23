@@ -7,6 +7,22 @@ went, and lets you start and watch live sessions.
 ## Run it
 
 ```bash
+./bin/descant
+```
+
+Or put it on your `PATH` once and forget where the repo lives:
+
+```bash
+ln -s "$PWD/bin/descant" ~/.local/bin/descant
+descant            # fixtures
+descant --real     # your real history in ~/.claude/projects
+descant <dir>      # any projects directory
+```
+
+The script installs the node and Python dependencies on first run and pins the
+backend to the repo's `.venv`. The manual equivalent is still:
+
+```bash
 cd app && npm install && npm start
 ```
 
@@ -21,7 +37,8 @@ everything else works without it.
 ### Point it at your real history
 
 ```bash
-cd app && DESCANT_PROJECTS_DIR=~/.claude/projects npm start
+descant --real
+# or: cd app && DESCANT_PROJECTS_DIR=~/.claude/projects npm start
 ```
 
 No code changes needed — that's the only knob. See `PROGRESS.md` for the two

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Launch the Descant IDE.
+#
+#   descant              fixtures (six demo sessions across three repos)
+#   descant --real       your real history in ~/.claude/projects
+#   descant <dir>        any projects directory
+#
+# Anything after `--` is passed through to electron.
+set -euo pipefail
+
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  link="$(readlink "$SELF")"
+  case "$link" in
+    /*) SELF="$link" ;;
+    *) SELF="$(dirname "$SELF")/$link" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+case "${1-}" in
+  -h|--help)
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  --real)
+    export DESCANT_PROJECTS_DIR="$HOME/.claude/projects"
+    shift
+    ;;
+  --)
+    ;;
+  ?*)
+    export DESCANT_PROJECTS_DIR="$(cd "$1" && pwd)"
+    shift
+    ;;
+esac
+
+[ "${1-}" = "--" ] && shift
+
+if [ ! -d "$ROOT/app/node_modules/electron" ]; then
+  echo "descant: installing node dependencies..." >&2
+  (cd "$ROOT/app" && npm install)
+fi
+
+PY="$ROOT/.venv/bin/python3"
+[ -x "$PY" ] || PY="$(command -v python3)"
+if ! "$PY" -c "import fastapi, uvicorn" 2>/dev/null; then
+  echo "descant: installing backend dependencies..." >&2
+  "$PY" -m pip install -q -r "$ROOT/backend/requirements.txt"
+fi
+export DESCANT_PYTHON="$PY"
+
+cd "$ROOT/app"
+exec ./node_modules/.bin/electron . "$@"
