@@ -142,6 +142,26 @@ def test_attachments_are_counted_as_context():
           "skill_listing" in report.attachment_breakdown)
 
 
+def test_structured_attachments_flatten_to_text():
+    """File and reminder attachments nest their payload; the renderer needs a string."""
+    sess = parse_lines(
+        _lines(
+            {"type": "attachment", "timestamp": "2026-08-20T09:00:00Z",
+             "attachment": {"type": "file", "content": {
+                 "type": "text",
+                 "file": {"filePath": "/a/b.swift", "content": "import Foundation"}}}},
+            {"type": "attachment", "timestamp": "2026-08-20T09:00:01Z",
+             "attachment": {"type": "task_reminder", "content": [
+                 {"id": "1", "subject": "ship it", "status": "completed"}]}},
+        ),
+        "s", Path("s.jsonl"), "-x",
+    )
+    check("every attachment is text", all(isinstance(e.text, str) for e in sess.events))
+    check("file attachment keeps its path and body",
+          "/a/b.swift" in sess.events[0].text and "import Foundation" in sess.events[0].text)
+    check("list payload is serialised", "ship it" in sess.events[1].text)
+
+
 def test_cwd_beats_lossy_directory_name():
     sess = parse_lines(
         _lines({"type": "user", "message": {"role": "user", "content": "hi"},

@@ -236,6 +236,28 @@ def _result_text(block: dict) -> str:
     return json.dumps(c, ensure_ascii=False)
 
 
+def _attachment_text(att: dict) -> str:
+    """Attachment payloads are not always strings.
+
+    ``file`` attachments nest the real content a level down, and reminder-style
+    ones carry a list of structured items.  Everything downstream (renderer,
+    token estimate) assumes text, so flatten here.
+    """
+    raw = att.get("text") or att.get("content")
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        f = raw.get("file")
+        if isinstance(f, dict) and isinstance(f.get("content"), str):
+            path = f.get("filePath") or ""
+            return f"{path}\n{f['content']}" if path else f["content"]
+        if isinstance(raw.get("text"), str):
+            return raw["text"]
+    if raw is None:
+        raw = {k: v for k, v in att.items() if k != "type"}
+    return json.dumps(raw, ensure_ascii=False)
+
+
 def parse_lines(lines: Iterable[str], session_id: str, path: Path, project_key: str) -> Session:
     sess = Session(session_id=session_id, path=path, project_key=project_key)
     seen_requests: set[str] = set()
@@ -279,12 +301,7 @@ def parse_lines(lines: Iterable[str], session_id: str, path: Path, project_key: 
 
         if ltype == "attachment":
             att = d.get("attachment") or {}
-            text = att.get("text") or att.get("content") or ""
-            if not text:
-                # Listing-style attachments: their payload is structured.
-                text = json.dumps(
-                    {k: v for k, v in att.items() if k != "type"}, ensure_ascii=False
-                )
+            text = _attachment_text(att)
             sess.events.append(
                 Event(
                     kind="attachment",
