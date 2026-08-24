@@ -5,45 +5,70 @@
    references these variables exclusively; if you find a hex code or a pixel
    value anywhere else, that is a bug.
 
-   Current pass: neutral dark, VS Code "Dark Modern" lineage.  Greys carry the
-   UI; one accent blue marks selection and active state, used sparingly.
+   Current pass: "glacial night".  Black rock under meltwater — the ground is
+   near-black with a blue cast, every panel is a thin sheet of ice floating on
+   it, and one meltwater blue does all the selection and focus work.  Colour
+   beyond that is functional only: session status and context-cost segments,
+   which read as aurora over the same dark ground.
    ========================================================================== */
 
 :root {
   /* --- surfaces, back to front ------------------------------------------ */
-  --bg-app: #1f1f1f; /* editor / main canvas */
-  --bg-sidebar: #181818; /* explorer, agent panel */
-  --bg-activity: #181818; /* far-left icon rail */
-  --bg-titlebar: #181818;
-  --bg-panel: #181818; /* bottom terminal panel */
-  --bg-tabs: #181818;
-  --bg-tab-active: #1f1f1f;
-  --bg-input: #313131;
-  --bg-hover: #2a2d2e;
-  --bg-selected: #04395e; /* VS Code's list.activeSelectionBackground */
-  --bg-raised: #252526; /* popovers, cards inside sidebars */
-  --bg-code: #1a1a1a; /* tool output blocks */
+  --bg-app: #07080a; /* editor / main canvas — the rock */
+  --bg-deep: #040507; /* behind everything; letterboxing, wells */
+  --bg-chrome: #0d0f13; /* opaque fallback for glass panels */
+  --bg-sidebar: rgba(255, 255, 255, 0.035); /* explorer, agent panel */
+  --bg-activity: transparent; /* far-left icon rail floats on the ground */
+  --bg-titlebar: rgba(255, 255, 255, 0.035);
+  --bg-panel: rgba(255, 255, 255, 0.035); /* bottom terminal panel */
+  --bg-tabs: transparent;
+  --bg-tab-active: rgba(255, 255, 255, 0.06);
+  --bg-input: rgba(0, 0, 0, 0.35); /* wells read as cut into the glass */
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-selected: rgba(143, 216, 255, 0.1);
+  --bg-raised: rgba(255, 255, 255, 0.06); /* popovers, cards inside sidebars */
+  --bg-code: rgba(0, 0, 0, 0.35); /* tool output blocks */
+
+  /* --- glass ------------------------------------------------------------
+     Three tints, plus the hairline that gives every sheet its edge.  A glass
+     surface is: tint + hairline + inset top highlight + drop shadow. */
+  --glass-1: rgba(255, 255, 255, 0.035);
+  --glass-2: rgba(255, 255, 255, 0.06);
+  --glass-3: rgba(255, 255, 255, 0.1);
+  --glass-blur: 24px;
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --glass-lift: 0 24px 60px rgba(0, 0, 0, 0.45);
 
   /* --- borders ---------------------------------------------------------- */
-  --border: #2b2b2b;
-  --border-strong: #3c3c3c;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.18);
   --border-focus: var(--accent);
 
   /* --- text ------------------------------------------------------------- */
-  --fg: #cccccc;
-  --fg-strong: #e7e7e7;
-  --fg-muted: #9d9d9d;
-  --fg-faint: #6e6e6e;
-  --fg-inverse: #ffffff;
+  --fg: #e8ecf2;
+  --fg-strong: #ffffff;
+  --fg-muted: #9ba5b4;
+  --fg-faint: #6b7583;
+  --fg-inverse: #04212f; /* on top of the accent gradient */
 
   /* --- accent (used sparingly: selection, focus, active tab underline) --- */
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-dim: #1e3a5f;
+  --accent: #8fd8ff;
+  --accent-hover: #b6e6ff;
+  --accent-deep: #3fa9f5;
+  --accent-dim: rgba(143, 216, 255, 0.14);
+  --accent-glow: 0 0 22px rgba(63, 169, 245, 0.26);
+  --accent-gradient: linear-gradient(135deg, #a8e2ff 0%, #3fa9f5 100%);
+
+  /* --- ambient bloom -----------------------------------------------------
+     One soft aurora behind the chrome.  Without it the glass has nothing to
+     refract and the whole thing reads as flat translucent grey. */
+  --bloom-a: rgba(63, 169, 245, 0.14);
+  --bloom-b: rgba(91, 231, 196, 0.07);
+  --bloom-size: 1000px;
 
   /* --- status ----------------------------------------------------------- */
   --status-running: #4ade80; /* green  — agent is working */
-  --status-idle: #6e6e6e; /* grey   — nothing in flight */
+  --status-idle: #6b7583; /* grey   — nothing in flight */
   --status-needs-input: #fbbf24; /* amber  — waiting on you */
   --status-failed: #f87171; /* red    — process died */
 
@@ -56,20 +81,23 @@
   /* --- context-cost bar segments (inspector) ---------------------------- */
   --cost-system: #a78bfa;
   --cost-tools: #fbbf24;
-  --cost-conversation: #38bdf8;
-  --cost-track: #2b2b2b;
+  --cost-conversation: #8fd8ff;
+  --cost-mcp: #f472b6;
+  --cost-skills: #5be7c4;
+  --cost-track: rgba(255, 255, 255, 0.08);
 
   /* --- typography -------------------------------------------------------- */
-  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Ubuntu", "Droid Sans",
-    system-ui, sans-serif;
-  --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas,
+  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, Consolas,
     "Liberation Mono", monospace;
 
   --text-xs: 11px;
   --text-sm: 12px;
   --text-md: 13px;
   --text-lg: 15px;
-  --text-xl: 18px;
+  --text-xl: 20px;
+  --text-hero: 44px;
 
   --leading-tight: 1.35;
   --leading-normal: 1.55;
@@ -77,6 +105,9 @@
   --weight-normal: 400;
   --weight-medium: 500;
   --weight-bold: 600;
+
+  --tracking-label: 0.09em; /* small caps section headers */
+  --tracking-tight: -0.02em; /* display sizes only */
 
   /* --- spacing scale ----------------------------------------------------- */
   --space-0: 0;
@@ -90,40 +121,41 @@
   --space-8: 32px;
 
   /* --- radii + shadow ----------------------------------------------------- */
-  --radius-sm: 3px;
-  --radius-md: 5px;
-  --radius-lg: 8px;
-  --shadow-popover: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-pill: 999px;
+  --shadow-popover: 0 24px 60px rgba(0, 0, 0, 0.55);
 
-  /* --- layout metrics ----------------------------------------------------- */
-  --activity-bar-width: 48px;
+  /* --- layout metrics -----------------------------------------------------
+     Panels are inset sheets now, not edge-to-edge columns, so the rail is
+     wider than its icon and every column carries a gutter. */
+  --activity-bar-width: 68px;
+  --activity-btn-size: 40px;
   --sidebar-width: 300px;
   --agent-panel-width: 420px;
-  --titlebar-height: 35px;
-  --tab-height: 35px;
-  --statusbar-height: 22px;
-  --panel-height: 240px;
-  --row-height: 22px;
+  --titlebar-height: 46px;
+  --tab-height: 38px;
+  --statusbar-height: 34px;
+  --panel-height: 250px;
+  --row-height: 26px;
+  --gutter: 12px; /* space between floating panels */
 
   /* --- motion -------------------------------------------------------------
      Deliberately minimal: distinct readable states, no bespoke animation. */
-  --transition-fast: 80ms ease;
+  --transition-fast: 120ms ease;
   --spinner-duration: 900ms;
 
   /* --- scrollbars ---------------------------------------------------------- */
   --scrollbar-size: 10px;
-  --scrollbar-thumb: #4a4a4a;
-  --scrollbar-thumb-hover: #5c5c5c;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
 }
 
 /* --- loadout / mining / library ------------------------------------------ */
 :root {
-  --toggle-width: 34px;
-  --toggle-height: 18px;
+  --toggle-width: 42px;
+  --toggle-height: 24px;
   --stat-min-width: 120px;
-}
-
-:root {
-  --cost-mcp: #f472b6;
-  --cost-skills: #34d399;
 }

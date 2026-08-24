@@ -68,14 +68,33 @@ textarea:focus {
   display: grid;
   height: 100vh;
   grid-template-rows: var(--titlebar-height) 1fr var(--statusbar-height);
+  position: relative;
+  isolation: isolate;
+}
+
+/* One soft aurora behind the chrome.  Without something to refract, the
+   glass panels read as flat translucent grey. */
+#shell::before {
+  content: "";
+  position: absolute;
+  left: 15%;
+  top: -18%;
+  width: var(--bloom-size);
+  height: var(--bloom-size);
+  background:
+    radial-gradient(closest-side, var(--bloom-a), transparent),
+    radial-gradient(closest-side at 70% 70%, var(--bloom-b), transparent);
+  pointer-events: none;
+  z-index: -1;
 }
 
 #titlebar {
   display: flex;
   align-items: center;
   gap: var(--space-5);
-  padding: 0 var(--space-5);
+  padding: 0 var(--space-7);
   background: var(--bg-titlebar);
+  backdrop-filter: blur(var(--glass-blur));
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
   font-size: var(--text-sm);
@@ -85,7 +104,9 @@ textarea:focus {
 #titlebar .brand {
   font-weight: var(--weight-bold);
   color: var(--fg-strong);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  font-size: var(--text-md);
 }
 
 #titlebar .spacer {
@@ -99,6 +120,8 @@ textarea:focus {
 #body {
   display: grid;
   grid-template-columns: var(--activity-bar-width) var(--sidebar-width) 1fr var(--agent-panel-width);
+  gap: var(--gutter);
+  padding: var(--gutter) var(--gutter) var(--gutter) 0;
   min-height: 0;
 }
 
@@ -120,43 +143,56 @@ textarea:focus {
 
 #activity-bar {
   background: var(--bg-activity);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: var(--space-2);
-  gap: var(--space-1);
+  padding: var(--space-4) 0;
+  gap: var(--space-4);
 }
 
 .activity-btn {
-  width: var(--activity-bar-width);
-  height: var(--activity-bar-width);
+  width: var(--activity-btn-size);
+  height: var(--activity-btn-size);
   display: grid;
   place-items: center;
   color: var(--fg-faint);
-  border-left: 2px solid transparent;
-  transition: color var(--transition-fast);
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
   position: relative;
+  flex: 0 0 auto;
 }
 
 .activity-btn:hover {
   color: var(--fg);
+  background: var(--glass-2);
 }
 
+/* Active rail item is the one place a glow is allowed: it has to be findable
+   in peripheral vision while you are reading the transcript. */
 .activity-btn.active {
-  color: var(--fg-strong);
-  border-left-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--border-strong);
+  box-shadow: var(--accent-glow);
 }
 
 .activity-btn svg {
-  width: var(--space-7);
-  height: var(--space-7);
+  width: var(--space-6);
+  height: var(--space-6);
+}
+
+/* Settings is the last activity; it belongs at the foot of the rail. */
+.activity-btn:last-child {
+  margin-top: auto;
 }
 
 .activity-btn .badge {
   position: absolute;
-  right: var(--space-3);
-  bottom: var(--space-3);
+  right: calc(-1 * var(--space-2));
+  bottom: calc(-1 * var(--space-2));
   min-width: var(--space-5);
   height: var(--space-5);
   padding: 0 var(--space-1);
@@ -173,9 +209,21 @@ textarea:focus {
    Sidebar
    ========================================================================== */
 
+/* Every panel is the same sheet of ice: tint, hairline, top highlight, lift. */
+.glass,
+#sidebar,
+#agent-panel,
+#panel {
+  background: var(--glass-1);
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    var(--glass-lift),
+    var(--glass-highlight);
+}
+
 #sidebar {
-  background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -186,11 +234,12 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-5) var(--space-3);
+  padding: var(--space-6) var(--space-6) var(--space-5);
+  border-bottom: 1px solid var(--glass-2);
   font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-muted);
+  letter-spacing: var(--tracking-label);
+  color: var(--fg-faint);
   font-weight: var(--weight-bold);
 }
 
@@ -227,15 +276,20 @@ textarea:focus {
   align-items: center;
   gap: var(--space-3);
   height: var(--row-height);
-  padding: 0 var(--space-5);
+  margin: 0 var(--space-4);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  color: var(--fg);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-label);
+  font-weight: var(--weight-bold);
 }
 
 .repo-header:hover {
-  background: var(--bg-hover);
+  background: var(--glass-1);
+  color: var(--fg);
 }
 
 .repo-header .chevron {
@@ -269,20 +323,27 @@ textarea:focus {
 .session-row {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-height: var(--row-height);
-  padding: var(--space-1) var(--space-5) var(--space-1) var(--space-7);
+  margin: 0 var(--space-4);
+  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-6);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
   cursor: pointer;
-  border-left: 2px solid transparent;
+  transition: background var(--transition-fast);
 }
 
 .session-row:hover {
-  background: var(--bg-hover);
+  background: var(--glass-1);
 }
 
 .session-row.active {
   background: var(--bg-selected);
-  border-left-color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.session-row.active .label {
+  color: var(--fg-strong);
 }
 
 .session-row .label {
@@ -317,9 +378,11 @@ textarea:focus {
 }
 .dot.needs_input {
   background: var(--status-needs-input);
+  box-shadow: 0 0 var(--space-4) var(--status-needs-input);
 }
 .dot.failed {
   background: var(--status-failed);
+  box-shadow: 0 0 var(--space-4) var(--status-failed);
 }
 .dot.running,
 .dot.starting {
@@ -358,18 +421,24 @@ textarea:focus {
 
 #center {
   display: grid;
-  grid-template-rows: var(--tab-height) 1fr auto;
+  grid-template-rows: auto 1fr auto;
   min-width: 0;
   min-height: 0;
-  background: var(--bg-app);
+  background: transparent;
 }
 
 #tabs {
   display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: var(--space-5);
   background: var(--bg-tabs);
-  border-bottom: 1px solid var(--border);
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+#tabs:empty {
+  padding-bottom: 0;
 }
 
 #tabs::-webkit-scrollbar {
@@ -380,25 +449,30 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: 0 var(--space-5);
+  padding: 0 var(--space-6);
   height: var(--tab-height);
-  border-right: 1px solid var(--border);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   color: var(--fg-muted);
   font-size: var(--text-sm);
   white-space: nowrap;
   cursor: pointer;
-  border-top: 1px solid transparent;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
   flex: 0 0 auto;
 }
 
 .tab:hover {
   color: var(--fg);
+  background: var(--glass-1);
 }
 
 .tab.active {
   background: var(--bg-tab-active);
+  border-color: var(--border);
   color: var(--fg-strong);
-  border-top-color: var(--accent);
+  box-shadow: var(--glass-highlight);
 }
 
 .tab .close {
@@ -420,6 +494,13 @@ textarea:focus {
   position: relative;
   min-height: 0;
   overflow: hidden;
+  background: var(--glass-1);
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    var(--glass-lift),
+    var(--glass-highlight);
 }
 
 .view {
@@ -438,48 +519,62 @@ textarea:focus {
   inset: 0;
 }
 
+/* Left-aligned rather than centred: an empty editor should read as the start
+   of a page, not as an error dialog. */
 .empty-state {
   height: 100%;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: var(--space-5);
   color: var(--fg-faint);
-  text-align: center;
-  padding: var(--space-8);
+  padding: var(--space-8) calc(var(--space-8) * 2);
 }
 
 .empty-state h2 {
   margin: 0;
-  font-size: var(--text-xl);
-  font-weight: var(--weight-normal);
-  color: var(--fg-muted);
+  font-size: var(--text-hero);
+  line-height: var(--leading-tight);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--fg-strong);
+  max-width: 20ch;
 }
 
 .empty-state p {
   margin: 0;
-  max-width: 46ch;
+  max-width: 52ch;
+  font-size: var(--text-lg);
+  line-height: var(--leading-normal);
+  color: var(--fg-muted);
+}
+
+/* The lede carries the weight; anything after it is a footnote. */
+.empty-state p ~ p {
   font-size: var(--text-sm);
+  color: var(--fg-faint);
 }
 
 .empty-state kbd {
-  background: var(--bg-input);
-  border: 1px solid var(--border-strong);
+  background: var(--glass-2);
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-3);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  color: var(--fg);
 }
 
 /* --- bottom panel (terminal) ------------------------------------------- */
 
 #panel {
   height: var(--panel-height);
-  border-top: 1px solid var(--border);
-  background: var(--bg-panel);
+  margin-top: var(--gutter);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 #panel.hidden {
@@ -490,17 +585,28 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-5);
-  padding: 0 var(--space-5);
+  padding: 0 var(--space-6);
   height: var(--tab-height);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--glass-2);
   font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-muted);
+  letter-spacing: var(--tracking-label);
+  font-weight: var(--weight-bold);
+  color: var(--fg-faint);
+  flex: 0 0 auto;
 }
 
+/* The cwd is a path, not a label — it keeps its case and stays on one line. */
 .panel-header .spacer {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: var(--weight-normal);
+  font-family: var(--font-mono);
 }
 
 .panel-header button {
@@ -537,8 +643,6 @@ textarea:focus {
    ========================================================================== */
 
 #agent-panel {
-  background: var(--bg-sidebar);
-  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -546,8 +650,8 @@ textarea:focus {
 }
 
 .agent-header {
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--glass-2);
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -824,30 +928,38 @@ textarea:focus {
 }
 
 .btn {
-  background: var(--accent);
+  background: var(--accent-gradient);
   color: var(--fg-inverse);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3) var(--space-6);
+  border-radius: var(--radius-pill);
+  padding: var(--space-4) var(--space-7);
   font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
+  font-weight: var(--weight-bold);
+  box-shadow:
+    var(--accent-glow),
+    var(--glass-highlight);
+  transition: filter var(--transition-fast);
 }
 
 .btn:hover {
-  background: var(--accent-hover);
+  filter: brightness(1.08);
 }
 
 .btn:disabled {
-  opacity: 0.45;
+  opacity: 0.35;
+  box-shadow: none;
   cursor: default;
 }
 
 .btn.secondary {
-  background: var(--bg-input);
+  background: var(--glass-2);
+  border: 1px solid var(--border);
   color: var(--fg);
+  box-shadow: none;
 }
 
 .btn.secondary:hover {
-  background: var(--bg-hover);
+  background: var(--glass-3);
+  filter: none;
 }
 
 /* ==========================================================================
@@ -864,6 +976,7 @@ textarea:focus {
   margin: 0 0 var(--space-2);
   font-size: var(--text-xl);
   font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
   color: var(--fg-strong);
 }
 
@@ -874,18 +987,53 @@ textarea:focus {
 }
 
 .inspector h2 {
-  margin: var(--space-7) 0 var(--space-4);
+  margin: var(--space-8) 0 var(--space-5);
   font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-muted);
+  letter-spacing: var(--tracking-label);
+  color: var(--fg-faint);
   font-weight: var(--weight-bold);
+}
+
+/* The one number worth reading from across the room. */
+.hero {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  margin-bottom: var(--space-7);
+}
+
+.hero-num {
+  font-size: var(--text-hero);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  line-height: 1;
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-num span {
+  font-size: var(--text-xl);
+  color: var(--fg-faint);
+  margin-left: var(--space-1);
+}
+
+.hero-label {
+  color: var(--fg);
+  font-size: var(--text-md);
+}
+
+.hero-sub {
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 .stack-bar {
   display: flex;
-  height: var(--space-7);
-  border-radius: var(--radius-sm);
+  gap: var(--space-1);
+  height: var(--space-5);
+  border-radius: var(--radius-pill);
   overflow: hidden;
   background: var(--cost-track);
   margin-bottom: var(--space-5);
@@ -951,10 +1099,10 @@ textarea:focus {
 }
 
 .notes {
-  margin-top: var(--space-6);
-  padding: var(--space-5);
-  background: var(--bg-raised);
-  border-radius: var(--radius-sm);
+  margin-top: var(--space-7);
+  padding: var(--space-6);
+  background: var(--glass-1);
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
 }
 
@@ -987,16 +1135,19 @@ textarea:focus {
 
 .pill {
   display: inline-block;
-  padding: 0 var(--space-3);
-  border-radius: var(--radius-lg);
+  padding: var(--space-1) var(--space-5);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
   font-size: var(--text-xs);
-  background: var(--bg-input);
+  background: var(--glass-2);
   color: var(--fg-muted);
 }
 
 .pill.measured {
   background: var(--accent-dim);
-  color: var(--accent-hover);
+  border-color: var(--border-strong);
+  color: var(--accent);
+  box-shadow: var(--accent-glow);
 }
 
 /* ==========================================================================
@@ -1007,11 +1158,12 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: var(--space-6);
-  padding: 0 var(--space-5);
-  background: var(--bg-titlebar);
-  border-top: 1px solid var(--border);
+  padding: 0 var(--space-7);
+  background: transparent;
+  border-top: 1px solid var(--glass-2);
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--fg-muted);
+  color: var(--fg-faint);
 }
 
 #statusbar .spacer {
@@ -1042,11 +1194,14 @@ textarea:focus {
   bottom: var(--space-7);
   left: 50%;
   transform: translateX(-50%);
-  background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-popover);
-  border-radius: var(--radius-md);
-  padding: var(--space-4) var(--space-6);
+  background: var(--bg-chrome);
+  backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--border);
+  box-shadow:
+    var(--shadow-popover),
+    var(--glass-highlight);
+  border-radius: var(--radius-xl);
+  padding: var(--space-5) var(--space-7);
   font-size: var(--text-sm);
   color: var(--fg);
   display: none;
@@ -1202,8 +1357,8 @@ textarea:focus {
   width: var(--toggle-width);
   height: var(--toggle-height);
   border-radius: var(--toggle-height);
-  background: var(--bg-input);
-  border: 1px solid var(--border-strong);
+  background: var(--glass-3);
+  border: 1px solid var(--border);
   position: relative;
   flex: 0 0 auto;
   transition: background var(--transition-fast);
@@ -1221,12 +1376,13 @@ textarea:focus {
 }
 
 .toggle.on {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-gradient);
+  border-color: transparent;
+  box-shadow: var(--accent-glow);
 }
 
 .toggle.on span {
-  background: var(--fg-inverse);
+  background: var(--bg-app);
   transform: translateX(calc(var(--toggle-width) - var(--toggle-height)));
 }
 
