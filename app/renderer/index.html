@@ -26,37 +26,18 @@
 
         <aside id="sidebar">
           <div class="sidebar-header">
-            <span id="sidebar-title">Sessions</span>
+            <span id="sidebar-title">Explorer</span>
             <span class="spacer"></span>
-            <button id="btn-new-session" title="Start a new session">New</button>
-            <button id="btn-refresh" title="Reload transcripts">Reload</button>
+            <button id="btn-new-session" title="Open a folder">Open</button>
+            <button id="btn-refresh" title="Reload from disk">Reload</button>
           </div>
           <div class="sidebar-scroll" id="sidebar-scroll"></div>
-          <div class="legend">
-            <span><i class="dot running"></i> running</span>
-            <span><i class="dot idle"></i> idle</span>
-            <span><i class="dot needs_input"></i> needs you</span>
-            <span><i class="dot failed"></i> failed</span>
-          </div>
         </aside>
 
         <main id="center">
           <div id="tabs"></div>
           <div id="editor-area">
-            <div class="view active" id="view-welcome">
-              <div class="empty-state">
-                <h2>Six agents are working. You can only see one.</h2>
-                <p>
-                  Pick a session from the sidebar to read its transcript and see where its
-                  context window went — or start a live run against a repo from the agent
-                  panel on the right.
-                </p>
-                <p>
-                  Toggle the terminal with <kbd>Ctrl</kbd>+<kbd>`</kbd>.
-                </p>
-              </div>
-            </div>
-            <div class="view" id="view-inspector"></div>
+            <div class="view active" id="view-welcome"></div>
             <div class="view" id="view-panel-generic"></div>
             <div class="view" id="view-editor"><div id="monaco-host"></div></div>
           </div>
@@ -107,11 +88,9 @@
 
       <div id="statusbar">
         <span class="item" id="status-backend">connecting…</span>
-        <span class="item" id="status-sessions"></span>
+        <span class="item clickable" id="status-branch" title="Branch"></span>
         <span class="spacer"></span>
         <span class="item" id="status-lang"></span>
-        <span class="item" id="status-context"></span>
-        <span class="item" id="status-runs"></span>
       </div>
     </div>
 
@@ -129,7 +108,6 @@
     <script src="contextmenu.js"></script>
     <script src="settings.js"></script>
     <script src="views.js"></script>
-    <script src="panels.js"></script>
     <script src="term.js"></script>
     <script src="chat.js"></script>
     <script src="resize.js"></script>

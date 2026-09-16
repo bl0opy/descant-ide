@@ -1,18 +1,11 @@
 # Descant
 
-A desktop IDE built around Claude Code, for people who run more than one agent
-at a time.
+A desktop code editor with Claude Code in the side panel.
 
-Claude Code tells you about the session in front of you. `/cost` is per-session,
-`/context` estimates what MCP costs you, and neither has anything to say about
-the other four sessions you have running across three repos. Descant reads the
-transcripts Claude Code already writes — every repo, live, including sessions
-you started in some other terminal — and measures what they're actually
-spending: system prompt, tool schemas, MCP schemas, skill listings,
-conversation. Measured by spawning the servers and counting, not estimated.
-
-Today that's per-session and honest about it. The direction is the fleet view —
-see `IDEAS.md` for what's built versus what that thesis still owes.
+An editor first: open a folder, navigate a real file tree, edit with Monaco and
+its ~90 languages, search the tree with ripgrep, stage and commit from the
+source-control panel, and drop into a terminal on the same folder. The agent
+panel is there when you want it and out of the way when you don't.
 
 ## Run it
 
@@ -24,9 +17,9 @@ Or put it on your `PATH` once and forget where the repo lives:
 
 ```bash
 ln -s "$PWD/bin/descant" ~/.local/bin/descant
-descant            # fixtures
-descant --real     # your real history in ~/.claude/projects
-descant <dir>      # any projects directory
+descant            # the folder you had open last
+descant .          # this folder
+descant <dir>      # that folder
 ```
 
 The script installs the node and Python dependencies on first run and pins the
@@ -37,12 +30,16 @@ cd app && npm install && npm start
 ```
 
 That's it. Electron starts the Python backend itself; you don't need a second
-terminal. It ships pointed at the bundled fixtures, so you'll see six sessions
-across three repos on first launch.
+terminal.
+
+**Keys:** `⌘P` go to file · `⌘⇧F` search · `⌘⇧G` source control · `⌘S` save ·
+`⌘↵` run the open file · ``⌘` `` terminal · `⌘O` open folder.
 
 **Prerequisites:** Node 18+, Python 3.10+, and `pip install --break-system-packages -r backend/requirements.txt`
-(FastAPI + uvicorn). The `claude` CLI needs to be on `PATH` for live runs;
-everything else works without it.
+(FastAPI + uvicorn). `git` for the source-control panel, `ripgrep` for fast
+search (there's a Python fallback without it), `gh` for the GitHub bits, and the
+`claude` CLI for the agent panel — each degrades to "not installed" rather than
+breaking the app.
 
 ### Point it at your real history
 

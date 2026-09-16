@@ -3,18 +3,26 @@
 // Only things that actually change behaviour appear here. A settings screen
 // full of toggles that do nothing is worse than no settings screen, so every
 // row below is wired to something real, and the ones Descant cannot change from
-// inside the app (where transcripts come from, which CLI it spawns) are shown
-// as facts with the environment variable that governs them.
+// inside the app (which CLI it spawns, which port it serves) are shown as facts
+// with the environment variable that governs them.
 window.Settings = (() => {
   const KEY = 'descant.settings';
 
   const DEFAULTS = {
-    permissionMode: 'manual', // what a new chat starts in
+    // editing
     autoSave: 'off',          // 'off' | 'delay' | 'blur'
     autoSaveDelay: 1000,      // ms of quiet before an autosave, when 'delay'
+    tabSize: 4,
+    wordWrap: false,
+    // appearance
     fontSize: 12,             // editor and terminal
+    minimap: true,
+    lineNumbers: true,
+    bracketPairs: true,
+    // explorer
     showHidden: true,         // dotfiles in the explorer
-    probeMcp: true,           // spawn MCP servers to measure them
+    // chat
+    permissionMode: 'manual', // what a new chat starts in
   };
 
   let current = { ...DEFAULTS };
@@ -75,29 +83,24 @@ window.Settings = (() => {
     return b;
   }
 
-  function render(host, { config, onResetLayout, onClearChats }) {
+  function number(value, { min, max, step = 1, onSet }) {
+    const input = el(
+      `<input class="set-number" type="number" min="${min}" max="${max}" step="${step}" value="${value}" />`
+    );
+    input.addEventListener('change', () => {
+      const n = Math.min(max, Math.max(min, parseInt(input.value, 10) || value));
+      input.value = n;
+      onSet(n);
+    });
+    return input;
+  }
+
+  function render(host, { config, folder, onResetLayout, onClearChats }) {
     host.innerHTML = '';
     const wrap = el('<div class="inspector"></div>');
     wrap.appendChild(
-      el(`<div><h1>Settings</h1><div class="subtitle">Stored on this machine, applied immediately.</div></div>`)
-    );
-
-    // --- behaviour ------------------------------------------------------
-    wrap.appendChild(el('<h2>Chat</h2>'));
-
-    const mode = el(`
-      <select class="set-select">
-        <option value="manual">Ask me — every tool needs a click</option>
-        <option value="acceptEdits">Auto-accept edits — still asks for the rest</option>
-        <option value="plan">Plan only — read and think, change nothing</option>
-      </select>`);
-    mode.value = current.permissionMode;
-    mode.addEventListener('change', () => set({ permissionMode: mode.value }));
-    wrap.appendChild(
-      row(
-        'Default permission mode',
-        'What a <em>new</em> conversation starts in. Existing chats keep the mode you set in their header.',
-        mode
+      el(
+        `<div><h1>Settings</h1><div class="subtitle">Stored on this machine, applied immediately.</div></div>`
       )
     );
 
@@ -107,7 +110,7 @@ window.Settings = (() => {
     const auto = el(`
       <select class="set-select">
         <option value="off">Off — save with ${
-          navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl'
+          navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'
         }S</option>
         <option value="delay">After a pause in typing</option>
         <option value="blur">When the editor loses focus</option>
@@ -119,17 +122,18 @@ window.Settings = (() => {
           <div class="set-name">Pause before saving</div>
           <div class="set-help">Milliseconds of quiet before an autosave fires.</div>
         </div>
-        <div class="set-control">
-          <input class="set-number" type="number" min="200" max="10000" step="100"
-                 value="${current.autoSaveDelay}" />
-        </div>
+        <div class="set-control"></div>
       </div>`);
-    const delayInput = delayRow.querySelector('.set-number');
-    delayInput.addEventListener('change', () => {
-      const n = Math.min(10000, Math.max(200, parseInt(delayInput.value, 10) || DEFAULTS.autoSaveDelay));
-      delayInput.value = n;
-      set({ autoSaveDelay: n });
-    });
+    delayRow
+      .querySelector('.set-control')
+      .appendChild(
+        number(current.autoSaveDelay, {
+          min: 200,
+          max: 10000,
+          step: 100,
+          onSet: (n) => set({ autoSaveDelay: n }),
+        })
+      );
     const syncDelayRow = () => {
       delayRow.style.display = auto.value === 'delay' ? '' : 'none';
     };
@@ -147,18 +151,44 @@ window.Settings = (() => {
     wrap.appendChild(delayRow);
     syncDelayRow();
 
+    wrap.appendChild(
+      row('Tab size', 'Spaces per indent level.', number(current.tabSize, {
+        min: 1,
+        max: 8,
+        onSet: (n) => set({ tabSize: n }),
+      }))
+    );
+    wrap.appendChild(
+      row(
+        'Word wrap',
+        'Wrap long lines at the viewport edge instead of scrolling sideways.',
+        toggle(current.wordWrap, (v) => set({ wordWrap: v }))
+      )
+    );
+
     // --- appearance -----------------------------------------------------
     wrap.appendChild(el('<h2>Appearance</h2>'));
 
-    const size = el(
-      `<input class="set-number" type="number" min="9" max="24" step="1" value="${current.fontSize}" />`
+    wrap.appendChild(
+      row(
+        'Editor and terminal font size',
+        'In pixels.',
+        number(current.fontSize, { min: 9, max: 24, onSet: (n) => set({ fontSize: n }) })
+      )
     );
-    size.addEventListener('change', () => {
-      const n = Math.min(24, Math.max(9, parseInt(size.value, 10) || DEFAULTS.fontSize));
-      size.value = n;
-      set({ fontSize: n });
-    });
-    wrap.appendChild(row('Editor and terminal font size', 'In pixels.', size));
+    wrap.appendChild(
+      row('Minimap', 'The document overview down the right edge.', toggle(current.minimap, (v) => set({ minimap: v })))
+    );
+    wrap.appendChild(
+      row('Line numbers', '', toggle(current.lineNumbers, (v) => set({ lineNumbers: v })))
+    );
+    wrap.appendChild(
+      row(
+        'Bracket pair guides',
+        'Coloured vertical guides linking matching brackets.',
+        toggle(current.bracketPairs, (v) => set({ bracketPairs: v }))
+      )
+    );
 
     const reset = el('<button class="btn small secondary">Reset pane sizes</button>');
     reset.addEventListener('click', onResetLayout);
@@ -171,30 +201,55 @@ window.Settings = (() => {
     wrap.appendChild(
       row(
         'Show hidden files',
-        'Dotfiles like <code>.mcp.json</code> and <code>.gitignore</code>. Build directories (<code>node_modules</code>, <code>.git</code>, <code>dist</code>) are always hidden.',
+        'Dotfiles like <code>.gitignore</code> and <code>.env</code>. Build directories (<code>node_modules</code>, <code>.git</code>, <code>dist</code>) are always hidden.',
         toggle(current.showHidden, (v) => set({ showHidden: v }))
       )
     );
 
-    // --- cost -----------------------------------------------------------
-    wrap.appendChild(el('<h2>Measurement</h2>'));
+    // --- chat -----------------------------------------------------------
+    wrap.appendChild(el('<h2>Chat</h2>'));
+    const mode = el(`
+      <select class="set-select">
+        <option value="manual">Ask me — every tool needs a click</option>
+        <option value="acceptEdits">Auto-accept edits — still asks for the rest</option>
+        <option value="plan">Plan only — read and think, change nothing</option>
+      </select>`);
+    mode.value = current.permissionMode;
+    mode.addEventListener('change', () => set({ permissionMode: mode.value }));
     wrap.appendChild(
       row(
-        'Probe MCP servers',
-        'Descant measures a server by spawning it and asking what tools it exposes. That is the only way to get a real number, but it costs a process per server — turn it off for a faster, estimate-free loadout view.',
-        toggle(current.probeMcp, (v) => set({ probeMcp: v }))
+        'Default permission mode',
+        'What a <em>new</em> conversation starts in. Existing chats keep the mode you set in their header.',
+        mode
+      )
+    );
+
+    const clear = el('<button class="btn small secondary danger">Close all chats</button>');
+    clear.addEventListener('click', onClearChats);
+    wrap.appendChild(
+      row(
+        'Close every open conversation',
+        'Stops the <code>claude</code> processes behind them. Files on disk are not touched.',
+        clear
       )
     );
 
     // --- facts ----------------------------------------------------------
     wrap.appendChild(
-      el(`<h2>Environment <span class="h2-note">set outside the app, shown here so you know what is in effect</span></h2>`)
+      el(
+        `<h2>Environment <span class="h2-note">set outside the app, shown here so you know what is in effect</span></h2>`
+      )
     );
     const facts = [
-      ['Transcripts', config.projectsDir, 'DESCANT_PROJECTS_DIR'],
+      ['Open folder', folder || 'none', ''],
       ['Backend', config.api, 'DESCANT_PORT'],
-      ['Terminal', config.ptyAvailable ? 'available' : `unavailable — ${config.ptyError || 'unknown'}`, ''],
-      ['Scratch repo', config.sandboxRepo, ''],
+      [
+        'Terminal',
+        config.ptyAvailable ? 'available' : `unavailable — ${config.ptyError || 'unknown'}`,
+        'SHELL',
+      ],
+      ['Claude CLI', config.claude || 'not found on PATH', 'DESCANT_CLAUDE_BIN'],
+      ['ripgrep', config.ripgrep || 'not installed — using the slower Python walk', ''],
     ];
     for (const [name, value, envVar] of facts) {
       wrap.appendChild(
@@ -206,18 +261,6 @@ window.Settings = (() => {
         </div>`)
       );
     }
-
-    // --- sessions -------------------------------------------------------
-    wrap.appendChild(el('<h2>Live chats</h2>'));
-    const clear = el('<button class="btn small secondary danger">Close all chats</button>');
-    clear.addEventListener('click', onClearChats);
-    wrap.appendChild(
-      row(
-        'Close every open conversation',
-        'Stops the <code>claude</code> processes behind them. Transcripts on disk are not touched.',
-        clear
-      )
-    );
 
     host.appendChild(wrap);
   }

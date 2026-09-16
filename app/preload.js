@@ -7,6 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('descant', {
   config: () => ipcRenderer.invoke('descant:config'),
   backendLog: () => ipcRenderer.invoke('descant:backendLog'),
+  openFolder: () => ipcRenderer.invoke('descant:openFolder'),
 
   pty: {
     spawn: (opts) => ipcRenderer.invoke('pty:spawn', opts),
