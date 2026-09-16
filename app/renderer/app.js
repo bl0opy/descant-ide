@@ -1,35 +1,42 @@
 // Descant renderer — application controller.
 //
-// Owns state and wiring only.  Rendering lives in views.js, the terminal in
-// term.js, the editor in editor.js.  Data comes from the Python backend over
+// Owns state and wiring only. Rendering lives in views.js, the terminal in
+// term.js, the editor in editor.js. Data comes from the Python backend over
 // HTTP + WebSocket; nothing is computed here that the backend already knows.
+//
+// The unit of work is a *folder you opened*, not a session someone recorded.
+// Everything below — the explorer, search, source control, the terminal's cwd,
+// the chat's repo — hangs off `S.folder`.
 
 (() => {
-  const { esc, fmtTokens, ago, renderEvent, renderLog, renderInspector, toolSummary } =
-    window.Views;
+  const { esc, renderEvent } = window.Views;
 
   const S = {
     api: 'http://127.0.0.1:8787',
     config: null,
-    repos: [],
-    live: [],           // live runs, newest first
-    selected: null,     // {type:'session'|'run', id}
+    folder: null,       // absolute path of the open folder
+    recents: [],        // recently opened folders, most recent first
+    git: null,          // last /api/git/status payload
     tabs: [],           // {key,label,view,payload}
     activeTab: null,
-    ws: null,
-    logEvents: [],
-    collapsed: new Set(),
-    activeView: 'sessions',
+    activeView: 'files',
     panelOpen: false,
-    fileCache: new Map(),
-    panelMode: 'chat',  // 'chat' = live conversation, 'session' = read-only transcript
-    chatCwd: null,      // which repo's chat the panel is showing
-    fileRoot: null,     // repo the explorer is rooted at
+    chatCwd: null,      // which folder's chat the panel is showing
     openFilePath: null, // file showing in the editor, for the Run arrow
     truncatedFiles: new Set(), // loaded partially — never safe to save back
   };
 
+  const RECENTS_KEY = 'descant.recentFolders';
+  const LAST_KEY = 'descant.lastFolder';
+  const MOD = navigator.platform.includes('Mac') ? '⌘' : 'Ctrl';
+
   const $ = (id) => document.getElementById(id);
+  const el = (html) => {
+    const d = document.createElement('div');
+    d.innerHTML = html.trim();
+    return d.firstElementChild;
+  };
+  const base = (p) => (p || '').split('/').filter(Boolean).pop() || p || '';
 
   // ======================================================================
   // helpers
@@ -37,19 +44,12 @@
 
   let toastTimer = null;
   function toast(msg, isError = false) {
-    const el = $('toast');
-    el.textContent = msg;
-    el.className = 'show' + (isError ? ' err' : '');
+    const node = $('toast');
+    node.textContent = msg;
+    node.className = 'show' + (isError ? ' err' : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (el.className = ''), 4200);
+    toastTimer = setTimeout(() => (node.className = ''), 4200);
   }
-
-  const post = (path, body) =>
-    api(path, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
 
   async function api(path, opts) {
     const res = await fetch(S.api + path, opts);
@@ -65,124 +65,93 @@
     return res.json();
   }
 
-  // ======================================================================
-  // sidebar
-  // ======================================================================
-
-  function statusOfSession(sessionData) {
-    // History is idle by definition; a session we are actively following lends
-    // its live status to the matching row.
-    const live = S.live.find((r) => r.sessionId === sessionData.session_id);
-    return live ? live.status : 'idle';
-  }
-
-  function renderSidebar() {
-    const host = $('sidebar-scroll');
-    host.innerHTML = '';
-
-    if (S.live.length) {
-      host.appendChild(
-        groupEl(
-          'Live runs',
-          S.live.map((r) => ({
-            id: r.sessionId || r.cwd,
-            type: 'live',
-            label: r.prompt || r.sessionId || '(starting…)',
-            sub: r.cwd.split('/').pop(),
-            status: r.status,
-          })),
-          'live'
-        )
-      );
-    }
-
-    for (const repo of S.repos) {
-      host.appendChild(
-        groupEl(
-          repo.repo_name,
-          repo.sessions.map((s) => ({
-            id: s.session_id,
-            type: 'session',
-            label: s.title,
-            sub: ago(s.last_activity),
-            status: statusOfSession(s),
-            tokens: s.context.total_tokens,
-          })),
-          repo.repo_path,
-          repo.repo_path
-        )
-      );
-    }
-
-    if (!S.repos.length && !S.live.length) {
-      const p = document.createElement('div');
-      p.className = 'empty-state';
-      p.innerHTML = `<p>No transcripts found in<br><code>${esc(
-        S.config?.projectsDir || ''
-      )}</code></p>`;
-      host.appendChild(p);
-    }
-  }
-
-  function groupEl(name, items, key, titleAttr) {
-    const wrap = document.createElement('div');
-    wrap.className = 'repo-group' + (S.collapsed.has(key) ? ' collapsed' : '');
-
-    const head = document.createElement('div');
-    head.className = 'repo-header';
-    head.title = titleAttr || name;
-    head.innerHTML = `<span class="chevron">${window.Icons.chevronDown}</span>
-      <span class="repo-name">${esc(name)}</span>
-      <span class="count">${items.length}</span>`;
-    head.addEventListener('click', () => {
-      if (S.collapsed.has(key)) S.collapsed.delete(key);
-      else S.collapsed.add(key);
-      wrap.classList.toggle('collapsed');
+  const post = (path, body) =>
+    api(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
     });
-    wrap.appendChild(head);
 
-    const list = document.createElement('div');
-    list.className = 'repo-sessions';
-    for (const it of items) {
-      const row = document.createElement('div');
-      const isActive = S.selected?.type === it.type && S.selected?.id === it.id;
-      row.className = 'session-row' + (isActive ? ' active' : '');
-      row.title = it.label;
-      row.innerHTML = `<i class="dot ${esc(it.status)}"></i>
-        <span class="label">${esc(it.label)}</span>
-        <span class="sub">${esc(
-          it.tokens != null ? fmtTokens(it.tokens) : it.sub || ''
-        )}</span>
-        ${
-          it.type === 'session'
-            ? `<button class="row-delete" title="Delete this session's transcript">${window.Icons.close}</button>`
-            : ''
-        }`;
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.row-delete')) {
-          e.stopPropagation();
-          deleteSession(it.id, it.label);
-          return;
-        }
-        return it.type === 'live'
-          ? followRepo(
-              S.live.find((r) => (r.sessionId || r.cwd) === it.id).cwd,
-              S.live.find((r) => (r.sessionId || r.cwd) === it.id).sessionId
-            )
-          : openSession(it.id);
-      });
-      if (it.type === 'session') {
-        window.ContextMenu.attach(row, () => [
-          { label: 'Open', action: () => openSession(it.id) },
-          { label: 'Copy Session ID', action: () => navigator.clipboard.writeText(it.id) },
-          { separator: true },
-          { label: 'Delete Session', danger: true, action: () => deleteSession(it.id, it.label) },
-        ]);
-      }
-      list.appendChild(row);
+  function fmtBytes(n) {
+    if (n == null) return '';
+    if (n < 1024) return `${n}b`;
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)}k`;
+    return `${(n / 1048576).toFixed(1)}M`;
+  }
+
+  // ======================================================================
+  // the open folder
+  // ======================================================================
+
+  function loadRecents() {
+    try {
+      S.recents = JSON.parse(localStorage.getItem(RECENTS_KEY) || '[]').filter(Boolean);
+    } catch {
+      S.recents = [];
     }
-    wrap.appendChild(list);
-    return wrap;
+    return S.recents;
+  }
+
+  function rememberFolder(path) {
+    S.recents = [path, ...S.recents.filter((p) => p !== path)].slice(0, 10);
+    try {
+      localStorage.setItem(RECENTS_KEY, JSON.stringify(S.recents));
+      localStorage.setItem(LAST_KEY, path);
+    } catch {
+      /* storage disabled; recents just won't persist */
+    }
+  }
+
+  /** Point the whole app at *path*: explorer, terminal cwd, git, chat target. */
+  async function openFolder(path) {
+    if (!path) return;
+    try {
+      await api(`/api/files?path=${encodeURIComponent(path)}&limit=1`);
+    } catch (err) {
+      toast(`cannot open ${base(path)}: ${err.message}`, true);
+      S.recents = S.recents.filter((p) => p !== path);
+      try {
+        localStorage.setItem(RECENTS_KEY, JSON.stringify(S.recents));
+      } catch {
+        /* nothing to do */
+      }
+      return;
+    }
+    S.folder = path;
+    rememberFolder(path);
+    EXPANDED.clear();
+    renderTargets();
+    $('titlebar-source').textContent = path;
+    $('panel-cwd').textContent = path;
+    post('/api/search/reindex', { root: path }).catch(() => {});
+    await refreshGit();
+    showView(S.activeView === 'files' ? 'files' : S.activeView);
+    // The welcome pane names the open folder and lists recents, so it has to be
+    // redrawn when the folder changes — not only when a tab closes onto it.
+    if (!S.activeTab) renderWelcome();
+    if (S.panelOpen) window.Term.open(path);
+  }
+
+  async function pickFolder() {
+    const picked = await window.descant.openFolder();
+    if (picked) await openFolder(picked);
+  }
+
+  /** The folder picker in the composer row — recents, plus a way to add one. */
+  function renderTargets() {
+    const sel = $('composer-target');
+    sel.innerHTML =
+      S.recents
+        .map((p) => `<option value="${esc(p)}">${esc(base(p))}</option>`)
+        .join('') + `<option value="__open__">Open folder…</option>`;
+    if (S.folder) sel.value = S.folder;
+    updateComposerHint();
+  }
+
+  function updateComposerHint() {
+    $('composer-hint').textContent = S.folder
+      ? `Send chats · Run shells · ${base(S.folder)}`
+      : 'Open a folder to get started';
   }
 
   // ======================================================================
@@ -193,21 +162,28 @@
     const host = $('tabs');
     host.innerHTML = '';
     for (const t of S.tabs) {
-      const el = document.createElement('div');
-      el.className = 'tab' + (t.key === S.activeTab ? ' active' : '');
-      el.innerHTML = `<span>${esc(t.label)}</span>${
+      const node = document.createElement('div');
+      node.className = 'tab' + (t.key === S.activeTab ? ' active' : '');
+      node.title = t.title || t.label;
+      node.innerHTML = `<span>${esc(t.label)}</span>${
         t.dirty ? '<span class="dirty" title="Unsaved changes"></span>' : ''
       }<span class="close">${window.Icons.close}</span>`;
-      el.addEventListener('click', (e) => {
+      node.addEventListener('click', (e) => {
         if (e.target.closest('.close')) {
           closeTab(t.key);
           return;
         }
         activateTab(t.key);
       });
-      window.ContextMenu.attach(el, () => [
-        { label: 'Close', hint: `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+W`,
-          action: () => closeTab(t.key) },
+      // Middle-click closes, the way every editor with tabs does it.
+      node.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+          e.preventDefault();
+          closeTab(t.key);
+        }
+      });
+      window.ContextMenu.attach(node, () => [
+        { label: 'Close', hint: `${MOD}+W`, action: () => closeTab(t.key) },
         {
           label: 'Close Others',
           disabled: S.tabs.length < 2,
@@ -215,23 +191,27 @@
             for (const other of [...S.tabs]) if (other.key !== t.key) closeTab(other.key);
           },
         },
-        { label: 'Close All', action: () => {
+        {
+          label: 'Close All',
+          action: () => {
             for (const other of [...S.tabs]) closeTab(other.key);
-          } },
+          },
+        },
+        { separator: true },
+        {
+          label: 'Copy Path',
+          disabled: !t.payload?.path,
+          action: () => navigator.clipboard.writeText(t.payload.path),
+        },
       ]);
-      host.appendChild(el);
+      host.appendChild(node);
     }
   }
 
   function openTab(tab) {
     const existing = S.tabs.find((t) => t.key === tab.key);
-    if (existing) {
-      // Re-opening replaces the payload/renderer: a loadout tab reopened after
-      // a toggle must draw the new state, not the closure it was created with.
-      Object.assign(existing, tab);
-    } else {
-      S.tabs.push(tab);
-    }
+    if (existing) Object.assign(existing, tab);
+    else S.tabs.push(tab);
     activateTab(tab.key);
   }
 
@@ -241,7 +221,9 @@
     renderTabs();
     for (const v of document.querySelectorAll('.view')) v.classList.remove('active');
     if (!tab) {
+      showLanguage(null);
       $('view-welcome').classList.add('active');
+      renderWelcome();
       return;
     }
     if (tab.view === 'panel') {
@@ -250,31 +232,33 @@
       tab.render($('view-panel-generic'));
       return;
     }
-    if (tab.view === 'inspector') {
-      showLanguage(null);
-      $('view-inspector').classList.add('active');
-      renderInspector($('view-inspector'), tab.payload);
-    } else if (tab.view === 'editor' || tab.view === 'diff') {
-      $('view-editor').classList.add('active');
-      if (tab.view === 'editor') {
-        clearTimeout(autoSaveTimer);
-        S.openFilePath = tab.payload.path;
-      }
-      window.Editor.layout();
-      // Monaco hosts one editor at a time, so re-open when the tab changes what
-      // should be showing.
-      const wanted = tab.view === 'diff' ? `diff:${tab.payload.path}` : tab.payload.path;
-      if (window.Editor.current() !== wanted) {
-        const p =
-          tab.view === 'diff'
-            ? window.Editor.openDiff(tab.payload.path, tab.payload.before, tab.payload.after)
-            : // No text argument: the model is already loaded, and handing over a
-              // snapshot here would overwrite unsaved edits.
-              window.Editor.openFile(tab.payload.path);
-        p.then(() => showLanguage(tab.payload.path)).catch((e) =>
-          toast(`editor: ${e.message}`, true)
-        );
-      }
+    $('view-editor').classList.add('active');
+    if (tab.view === 'editor') {
+      clearTimeout(autoSaveTimer);
+      S.openFilePath = tab.payload.path;
+      $('titlebar-context').textContent = relativeTo(tab.payload.path);
+    }
+    window.Editor.layout();
+    // Monaco hosts one editor at a time, so re-open when the tab changes what
+    // should be showing.
+    const wanted = tab.view === 'diff' ? `diff:${tab.payload.key || tab.payload.path}` : tab.payload.path;
+    if (window.Editor.current() !== wanted) {
+      const p =
+        tab.view === 'diff'
+          ? window.Editor.openDiff(
+              tab.payload.path,
+              tab.payload.before,
+              tab.payload.after,
+              tab.payload.key
+            )
+          : // No text argument: the model is already loaded, and handing over a
+            // snapshot here would overwrite unsaved edits.
+            window.Editor.openFile(tab.payload.path);
+      p.then(() => showLanguage(tab.payload.path)).catch((e) =>
+        toast(`editor: ${e.message}`, true)
+      );
+    } else {
+      showLanguage(tab.payload.path);
     }
   }
 
@@ -286,240 +270,37 @@
     const isFile = key.startsWith('file:');
     const path = isFile ? key.slice(5) : null;
     const stillDirty = isFile ? window.Editor.isPathDirty(path) : S.tabs[i].dirty;
-    if (stillDirty && !confirm(`${S.tabs[i].label} has unsaved changes. Close anyway?`)) {
-      return;
-    }
+    if (stillDirty && !confirm(`${S.tabs[i].label} has unsaved changes. Close anyway?`)) return;
     if (isFile) {
       clearTimeout(autoSaveTimer);
       window.Editor.closeFile(path);
       S.truncatedFiles.delete(path);
       if (S.openFilePath === path) S.openFilePath = null;
     }
-    if (key.startsWith('chat:')) disposeChat(key.slice(5));
     S.tabs.splice(i, 1);
     activateTab(S.tabs.length ? S.tabs[Math.max(0, i - 1)].key : null);
   }
 
+  function relativeTo(path) {
+    if (!path) return '';
+    if (S.folder && path.startsWith(S.folder + '/')) return path.slice(S.folder.length + 1);
+    return path;
+  }
+
   // ======================================================================
-  // agent panel
+  // editor plumbing
   // ======================================================================
 
   /** Status-bar language indicator, straight from Monaco's own detection. */
   function showLanguage(path) {
-    const el = $('status-lang');
+    const node = $('status-lang');
     if (!path) {
-      el.textContent = '';
+      node.textContent = '';
       return;
     }
     const id = window.Editor.langFor(path);
-    el.textContent = id === 'plaintext' ? 'Plain Text' : id;
-    el.title = `${window.Editor.languageCount()} languages available`;
-  }
-
-  function setAgentHeader({ title, meta, status }) {
-    $('agent-title').textContent = title || 'Agent';
-    $('agent-meta').textContent = meta || '';
-    $('agent-dot').className = `dot ${status || 'idle'}`;
-  }
-
-  function appendEvent(ev) {
-    const host = $('agent-log');
-    const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 120;
-    const el = renderEvent(ev, { container: host, onDiff: openDiff });
-    if (el) host.appendChild(el);
-    if (nearBottom) host.scrollTop = host.scrollHeight;
-  }
-
-  function closeWs() {
-    if (S.ws) {
-      S.ws.onclose = null;
-      S.ws.close();
-      S.ws = null;
-    }
-  }
-
-  // ======================================================================
-  // opening things
-  // ======================================================================
-
-  async function openSession(sessionId) {
-    S.selected = { type: 'session', id: sessionId };
-    S.panelMode = 'session';
-    renderSidebar();
-    closeWs();
-    try {
-      const data = await api(`/api/sessions/${sessionId}`);
-      S.logEvents = data.events;
-      setAgentHeader({
-        title: data.title,
-        meta: `${data.message_count} msgs · ${fmtTokens(data.context.total_tokens)}`,
-        status: 'idle',
-      });
-      renderLog($('agent-log'), data.events, { onDiff: openDiff });
-      // The panel is showing history now, not a conversation — say so, and
-      // leave an obvious way back to the live one.
-      $('btn-back-to-chat').style.display = S.chatCwd ? '' : 'none';
-      $('btn-send').disabled = false;
-      $('btn-stop').style.display = 'none';
-      renderTargets();
-      $('titlebar-context').textContent = `${data.repo_name} — ${data.git_branch || 'no branch'}`;
-      $('status-context').textContent = `context ${fmtTokens(
-        data.context.total_tokens
-      )} · ${data.measured.available ? '$' + data.measured.usd.toFixed(2) : 'no usage data'}`;
-      openTab({
-        key: `ctx:${sessionId}`,
-        label: `${data.repo_name} · context`,
-        view: 'inspector',
-        payload: data,
-      });
-      if (S.panelOpen) window.Term.open(data.repo_path);
-      $('panel-cwd').textContent = data.repo_path;
-    } catch (err) {
-      toast(`could not open session: ${err.message}`, true);
-    }
-  }
-
-  function updateRunControls(status) {
-    $('btn-stop').style.display =
-      status === 'running' || status === 'needs_input' ? '' : 'none';
-  }
-
-  // ======================================================================
-  // following a live session by its transcript
-  // ======================================================================
-
-  function upsertLive(entry) {
-    const key = entry.sessionId || entry.cwd;
-    const i = S.live.findIndex((r) => (r.sessionId || r.cwd) === key);
-    if (i >= 0) S.live[i] = { ...S.live[i], ...entry };
-    else S.live.unshift(entry);
-    renderSidebar();
-    renderActivityBar();
-    refreshStatusbar();
-  }
-
-  function followRepo(cwd, sessionId = null, prompt = null) {
-    S.selected = { type: 'live', cwd, sessionId };
-    upsertLive({ cwd, sessionId, status: 'running', prompt });
-    closeWs();
-    $('agent-log').innerHTML = '';
-    setAgentHeader({
-      title: sessionId ? `continuing ${sessionId.slice(0, 8)}` : 'live session',
-      meta: cwd.split('/').pop(),
-      status: 'running',
-    });
-    $('titlebar-context').textContent = `${cwd.split('/').pop()} — live`;
-
-    const qs = new URLSearchParams({ cwd, from_start: 'true' });
-    if (sessionId) qs.set('session_id', sessionId);
-    const ws = new WebSocket(`${S.api.replace(/^http/, 'ws')}/ws/tail?${qs}`);
-    S.ws = ws;
-    S.liveSessionId = sessionId;
-
-    ws.onmessage = (msg) => {
-      const ev = JSON.parse(msg.data);
-      if (ev.kind === 'ping') return;
-      if (ev.kind === 'meta') return;
-      if (ev.kind === 'status' && ev.subtype === 'attached') {
-        const prev = S.liveSessionId;
-        S.liveSessionId = ev.meta?.session_id || S.liveSessionId;
-        S.selected = { type: 'live', cwd, sessionId: S.liveSessionId };
-        // The placeholder row was keyed on cwd before we knew the id.
-        if (!prev) S.live = S.live.filter((r) => r.sessionId || r.cwd !== cwd);
-        upsertLive({ cwd, sessionId: S.liveSessionId, status: 'running' });
-        setAgentHeader({
-          title: `live · ${(S.liveSessionId || '').slice(0, 8)}`,
-          meta: cwd.split('/').pop(),
-          status: 'running',
-        });
-      }
-      if (ev.kind === 'status' && ev.subtype === 'state') {
-        const st = ev.meta?.status || 'idle';
-        $('agent-dot').className = `dot ${st}`;
-        updateRunControls(st);
-        upsertLive({ cwd, sessionId: S.liveSessionId, status: st });
-        if (st === 'needs_input') toast('Claude is waiting on you in the terminal', true);
-        return;
-      }
-      appendEvent(ev);
-    };
-    ws.onclose = () => {
-      if (S.ws === ws) S.ws = null;
-    };
-  }
-
-  /** The repo the selected thing belongs to — whether or not it exists here. */
-  function selectedRepo() {
-    if (S.selected?.type === 'live') {
-      return {
-        repo_path: S.selected.cwd,
-        repo_name: S.selected.cwd.split('/').pop(),
-        exists: true,
-      };
-    }
-    if (S.selected?.type === 'session') {
-      return (
-        S.repos.find((repo) =>
-          repo.sessions.some((s) => s.session_id === S.selected.id)
-        ) || null
-      );
-    }
-    return null;
-  }
-
-  /** Where file/terminal views point: only ever a path that exists. */
-  function currentRepoPath() {
-    const repo = selectedRepo();
-    if (repo && repo.exists !== false) return repo.repo_path;
-    return S.config?.sandboxRepo;
-  }
-
-  /** Populate the run-target picker with repos that actually exist here. */
-  function renderTargets() {
-    const sel = $('composer-target');
-    const previous = sel.value;
-    const opts = S.repos
-      .filter((r) => r.exists)
-      .map((r) => ({ value: r.repo_path, label: r.repo_name }));
-    if (S.config?.sandboxRepo && !opts.some((o) => o.value === S.config.sandboxRepo)) {
-      opts.push({ value: S.config.sandboxRepo, label: 'sandbox-repo (scratch)' });
-    }
-    sel.innerHTML = opts
-      .map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`)
-      .join('');
-
-    const repo = selectedRepo();
-    if (repo?.exists && opts.some((o) => o.value === repo.repo_path)) {
-      sel.value = repo.repo_path;
-    } else if (previous && opts.some((o) => o.value === previous)) {
-      sel.value = previous;
-    }
-    updateComposerHint();
-  }
-
-  function updateComposerHint() {
-    const repo = selectedRepo();
-    const target = $('composer-target').value;
-    const hint = $('composer-hint');
-    if (repo && repo.exists === false) {
-      hint.textContent = `${repo.repo_name} isn't on this machine — using ${target
-        .split('/')
-        .pop()}`;
-      hint.style.color = 'var(--warning)';
-    } else {
-      hint.textContent = `Send chats · Run shells · ${(target || '—').split('/').pop()}`;
-      hint.style.color = '';
-    }
-  }
-
-  /** Ctrl-C into the repo's shell — the session lives there now. */
-  function stopRun() {
-    const cwd = S.selected?.cwd || currentRepoPath();
-    if (!cwd || !window.Term.send(cwd, '\u0003')) {
-      toast('no terminal running for this repo');
-      return;
-    }
-    togglePanel(true);
+    node.textContent = id === 'plaintext' ? 'Plain Text' : id;
+    node.title = `${window.Editor.languageCount()} languages available`;
   }
 
   let autoSaveTimer = null;
@@ -536,10 +317,7 @@
     const cfg = window.Settings.get();
     clearTimeout(autoSaveTimer);
     if (cfg.autoSave !== 'delay' || !path) return;
-    autoSaveTimer = setTimeout(
-      () => saveOpenFile({ quiet: true, path }),
-      cfg.autoSaveDelay
-    );
+    autoSaveTimer = setTimeout(() => saveOpenFile({ quiet: true, path }), cfg.autoSaveDelay);
   }
 
   function autoSaveOnBlur() {
@@ -555,12 +333,6 @@
     renderTabs();
   }
 
-  /**
-   * Write the editor's buffer back to disk.
-   *
-   * Monaco was already editable, but nothing ever saved — you could type into a
-   * file all day and lose it on the next tab switch. This is that missing half.
-   */
   async function saveOpenFile({ quiet = false, path = null } = {}) {
     // The path is decided by the caller and re-checked here. An autosave
     // scheduled for one file must never land on whatever is open when the timer
@@ -588,15 +360,64 @@
       await api('/api/file', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ path, text, root: S.fileRoot || '' }),
+        body: JSON.stringify({ path, text, root: S.folder || '' }),
       });
       window.Editor.markSaved(text, path);
       markTabDirty(`file:${path}`, false);
-      // An autosave that announced itself every second would be noise.
-      if (!quiet) toast(`saved ${path.split('/').pop()}`);
+      if (!quiet) toast(`saved ${base(path)}`);
+      refreshGit();
     } catch (err) {
       // A failure is never quiet — silently not saving is the worst outcome.
       toast(`could not save: ${err.message}`, true);
+    }
+  }
+
+  async function openFile(path, label, { line = null } = {}) {
+    try {
+      const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
+      if (data.binary) {
+        toast('binary file — not opening');
+        return;
+      }
+      if (data.truncated) {
+        S.truncatedFiles.add(path);
+        toast(`${base(path)} is too large to load in full — opened read-only`, true);
+      } else {
+        S.truncatedFiles.delete(path);
+      }
+      // Load the buffer *before* opening the tab. openTab activates the tab
+      // synchronously, and that activation also asks the editor to show this
+      // path — if the model does not exist yet, the two race and the file can
+      // open blank.
+      clearTimeout(autoSaveTimer);
+      S.openFilePath = path;
+      await window.Editor.openFile(path, data.text, {
+        readOnly: Boolean(data.truncated),
+        onRun: runOpenFile,
+        onSave: saveOpenFile,
+        onDirty: (dirty) => {
+          // `Editor.current()` rather than the captured `path`: these handlers
+          // outlive the open that installed them, because the editor is reused.
+          const active = window.Editor.current();
+          markTabDirty(`file:${active}`, dirty);
+          if (dirty) scheduleAutoSave(active);
+        },
+        onBlur: autoSaveOnBlur,
+      });
+      openTab({
+        key: `file:${path}`,
+        label: label || base(path),
+        title: path,
+        view: 'editor',
+        // Only the path: the buffer lives in Monaco's model from here on. A
+        // text snapshot in the tab would go stale the moment you typed, and
+        // re-seeding from it on a tab switch is how edits used to disappear.
+        payload: { path },
+      });
+      if (line) window.Editor.reveal(line);
+      refreshRunnable(path);
+    } catch (err) {
+      toast(`could not open file: ${err.message}`, true);
     }
   }
 
@@ -605,7 +426,7 @@
   // ======================================================================
   //
   // The arrow in the title bar runs whatever file the editor is showing, with
-  // the interpreter the *repo* implies — a project with a .venv gets its own
+  // the interpreter the *folder* implies — a project with a .venv gets its own
   // python, not whatever is first on PATH. The command goes into the terminal
   // rather than a hidden subprocess, so you can see it, edit it, and re-run it.
 
@@ -620,9 +441,8 @@
       return;
     }
     try {
-      const repo = S.fileRoot || $('composer-target').value || currentRepoPath() || '';
       const res = await api(
-        `/api/runner?path=${encodeURIComponent(path)}&repo=${encodeURIComponent(repo)}`
+        `/api/runner?path=${encodeURIComponent(path)}&repo=${encodeURIComponent(S.folder || '')}`
       );
       if (!res.command) {
         btn.disabled = true;
@@ -631,9 +451,7 @@
       }
       runnable = res;
       btn.disabled = false;
-      btn.title = `${res.command}   (${
-        navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'
-      }+Enter)`;
+      btn.title = `${res.command}   (${MOD}+Enter)`;
     } catch {
       btn.disabled = true;
       btn.title = 'no runner for this file';
@@ -642,26 +460,29 @@
 
   async function runOpenFile() {
     if (!runnable) {
-      toast(
-        S.openFilePath ? 'no runner for this file type' : 'open a file to run it'
-      );
+      toast(S.openFilePath ? 'no runner for this file type' : 'open a file to run it');
       return;
     }
+    await sendToTerminal(runnable.cwd, runnable.command);
+  }
+
+  /** Open the terminal on *cwd* and type *command* into it. */
+  async function sendToTerminal(cwd, command) {
     if (!window.Term.available()) {
       toast('terminal unavailable — see the console', true);
       return;
     }
     togglePanel(true);
-    const opened = await window.Term.open(runnable.cwd);
+    const opened = await window.Term.open(cwd);
     if (opened && opened.ok === false) {
       toast(opened.error, true);
       return;
     }
+    // A freshly spawned pty has not drawn its prompt yet; typing immediately
+    // races the shell and the line can be swallowed.
     setTimeout(
       () => {
-        if (!window.Term.send(runnable.cwd, runnable.command)) {
-          toast('terminal went away before launch', true);
-        }
+        if (!window.Term.send(cwd, command)) toast('terminal went away before launch', true);
       },
       opened && opened.reused ? 0 : 400
     );
@@ -671,39 +492,26 @@
   // file explorer — a real tree
   // ======================================================================
   //
-  // It used to flatten the whole repo into one list of relative paths, which
-  // hides the structure you actually navigate by, and truncated on any big
-  // project. This expands a directory at a time, remembers what you opened, and
-  // can create and delete.
+  // Expands a directory at a time, remembers what you opened, and can create,
+  // rename, duplicate and delete.
 
   const EXPANDED = new Set(); // absolute dir paths currently open
 
-  const el = (html) => {
-    const d = document.createElement('div');
-    d.innerHTML = html.trim();
-    return d.firstElementChild;
-  };
-
   async function showFiles() {
-    // The dropdown is an explicit choice of repo, so it wins over whatever
-    // session happens to be selected.
-    const cwd = $('composer-target').value || currentRepoPath();
     const host = $('sidebar-scroll');
     $('sidebar-title').textContent = 'Explorer';
-    if (!cwd) {
-      host.innerHTML = `<div class="empty-state"><p>Open a session first.</p></div>`;
+    if (!S.folder) {
+      host.innerHTML = '';
+      host.appendChild(openFolderPrompt());
       return;
     }
-    S.fileRoot = cwd;
-    host.innerHTML = `<div class="empty-state"><p>Loading ${esc(
-      cwd.split('/').pop()
-    )}…</p></div>`;
+    host.innerHTML = `<div class="empty-state"><p>Loading ${esc(base(S.folder))}…</p></div>`;
     try {
       const tree = document.createElement('div');
       tree.className = 'tree';
-      await renderDir(tree, cwd, 0);
+      await renderDir(tree, S.folder, 0);
       host.innerHTML = '';
-      host.appendChild(treeToolbar(cwd));
+      host.appendChild(treeToolbar(S.folder));
       host.appendChild(tree);
       if (!tree.children.length) {
         host.appendChild(el(`<div class="empty-state"><p>Nothing here yet.</p></div>`));
@@ -713,28 +521,42 @@
     }
   }
 
+  function openFolderPrompt() {
+    const wrap = el(`
+      <div class="empty-state">
+        <p>No folder open.</p>
+        <button class="btn small" id="btn-open-folder-side">Open Folder…</button>
+      </div>`);
+    wrap.querySelector('button').addEventListener('click', pickFolder);
+    return wrap;
+  }
+
   function treeToolbar(root) {
     const bar = el(`
       <div class="tree-toolbar">
-        <span class="tree-root" title="${esc(root)}">${esc(root.split('/').pop())}</span>
+        <span class="tree-root" title="${esc(root)}">${esc(base(root))}</span>
         <button class="tree-act" data-act="file" title="New file">+ File</button>
         <button class="tree-act" data-act="folder" title="New folder">+ Folder</button>
       </div>`);
-    bar
-      .querySelector('[data-act="file"]')
-      .addEventListener('click', () => createEntry(root, false));
+    bar.querySelector('[data-act="file"]').addEventListener('click', () => createEntry(root, false));
     bar
       .querySelector('[data-act="folder"]')
       .addEventListener('click', () => createEntry(root, true));
+    window.ContextMenu.attach(bar, () => [
+      { label: 'Open Folder…', hint: `${MOD}+O`, action: pickFolder },
+      { label: 'Reveal in Terminal', action: () => revealInTerminal({ path: root, dir: true }) },
+      { label: 'Copy Path', action: () => navigator.clipboard.writeText(root) },
+    ]);
     return bar;
   }
 
   /** Render one directory's children into *container*, indented by *depth*. */
   async function renderDir(container, dir, depth) {
-    const data = await api(`/api/files?path=${encodeURIComponent(dir)}`);
     const showHidden = window.Settings.get().showHidden;
+    const data = await api(
+      `/api/files?path=${encodeURIComponent(dir)}&hidden=${showHidden ? 'true' : 'false'}`
+    );
     for (const entry of data.entries) {
-      if (!showHidden && entry.name.startsWith('.')) continue;
       container.appendChild(await renderEntry(entry, depth));
     }
     if (data.truncated) {
@@ -829,15 +651,18 @@
         ? { label: 'New Folder…', action: () => createEntry(entry.path, true, kids, depth + 1) }
         : {
             label: 'Run',
-            hint: `${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}+↵`,
+            hint: `${MOD}+↵`,
             action: async () => {
               await openFile(entry.path, entry.name);
               runOpenFile();
             },
           },
       { separator: true },
+      { label: 'Rename…', action: () => renameEntry(entry, row, depth) },
+      { label: 'Duplicate', action: () => duplicateEntry(entry) },
+      { separator: true },
       { label: 'Copy Path', action: () => navigator.clipboard.writeText(entry.path) },
-      { label: 'Copy Name', action: () => navigator.clipboard.writeText(entry.name) },
+      { label: 'Copy Relative Path', action: () => navigator.clipboard.writeText(relativeTo(entry.path)) },
       { label: 'Reveal in Terminal', action: () => revealInTerminal(entry) },
       { separator: true },
       { label: 'Delete', danger: true, action: () => deleteEntry(entry) },
@@ -852,23 +677,7 @@
   /** Drop the terminal into a folder (or a file's folder). */
   async function revealInTerminal(entry) {
     const dir = entry.dir ? entry.path : entry.path.replace(/\/[^/]+$/, '');
-    togglePanel(true);
-    const opened = await window.Term.open(S.fileRoot || dir);
-    if (opened && opened.ok === false) {
-      toast(opened.error, true);
-      return;
-    }
-    setTimeout(
-      () => window.Term.send(S.fileRoot || dir, `cd ${JSON.stringify(dir)}`),
-      opened && opened.reused ? 0 : 400
-    );
-  }
-
-  function fmtBytes(n) {
-    if (n == null) return '';
-    if (n < 1024) return `${n}b`;
-    if (n < 1024 * 1024) return `${Math.round(n / 1024)}k`;
-    return `${(n / 1048576).toFixed(1)}M`;
+    await sendToTerminal(S.folder || dir, `cd ${JSON.stringify(dir)}`);
   }
 
   /**
@@ -879,27 +688,30 @@
    * what a file explorer should do anyway — you can see where the thing is
    * about to land.
    */
-  function askForName({ anchor, depth, directory, onName }) {
+  function askForName({ anchor, depth, directory, value = '', placeholder, onName, replace = null }) {
     const row = el(`
       <div class="tree-row tree-new" style="padding-left:${8 + depth * 12}px">
         <span class="twist"></span>
         <span class="ticon">${
-          directory ? window.FileIcons.forFolder(false) : window.FileIcons.forFile('x')
+          directory ? window.FileIcons.forFolder(false) : window.FileIcons.forFile(value || 'x')
         }</span>
-        <input class="tname-input" spellcheck="false" placeholder="${
-          directory ? 'folder name' : 'name.ext — main.py, index.html'
-        }" />
+        <input class="tname-input" spellcheck="false" placeholder="${esc(
+          placeholder || (directory ? 'folder name' : 'name.ext — main.py, index.html')
+        )}" />
       </div>`);
-    anchor.prepend(row);
+    if (replace) replace.replaceWith(row);
+    else anchor.prepend(row);
     const input = row.querySelector('.tname-input');
     const icon = row.querySelector('.ticon');
+    input.value = value;
     let done = false;
 
     const finish = (name) => {
       if (done) return;
       done = true;
-      row.remove();
-      if (name) onName(name);
+      if (replace) row.replaceWith(replace);
+      else row.remove();
+      if (name && name !== value) onName(name);
     };
 
     // Show the icon the file will actually get, as you type the extension.
@@ -915,6 +727,10 @@
     });
     input.addEventListener('blur', () => finish(input.value.trim()));
     input.focus();
+    // Select the stem, not the extension — renaming usually keeps the type.
+    const dot = value.lastIndexOf('.');
+    if (dot > 0) input.setSelectionRange(0, dot);
+    else input.select();
   }
 
   /** Create a file or folder under *dir*. The name carries the extension. */
@@ -928,14 +744,15 @@
       onName: async (name) => {
         try {
           const res = await post('/api/fs/create', {
-            root: S.fileRoot,
-            path: dir === S.fileRoot ? name : `${dir}/${name}`,
+            root: S.folder,
+            path: dir === S.folder ? name : `${dir}/${name}`,
             directory,
           });
           toast(`created ${res.name}`);
-          if (dir !== S.fileRoot) EXPANDED.add(dir);
+          if (dir !== S.folder) EXPANDED.add(dir);
           await showFiles();
           if (!directory) openFile(res.path, res.name);
+          refreshGit();
         } catch (err) {
           toast(`could not create: ${err.message}`, true);
         }
@@ -943,21 +760,61 @@
     });
   }
 
+  function renameEntry(entry, row, depth) {
+    askForName({
+      depth,
+      directory: entry.dir,
+      value: entry.name,
+      replace: row,
+      onName: async (name) => {
+        try {
+          const res = await post('/api/fs/rename', {
+            root: S.folder,
+            path: entry.path,
+            to: name,
+          });
+          // A renamed file's tab and buffer are keyed on the old path, so the
+          // honest thing is to close it rather than leave a tab that saves to a
+          // file that no longer exists.
+          const tabKey = `file:${entry.path}`;
+          if (S.tabs.some((t) => t.key === tabKey)) {
+            window.Editor.closeFile(entry.path);
+            S.tabs = S.tabs.filter((t) => t.key !== tabKey);
+            renderTabs();
+          }
+          toast(`renamed to ${res.name}`);
+          await showFiles();
+          if (!entry.dir) openFile(res.path, res.name);
+          refreshGit();
+        } catch (err) {
+          toast(`could not rename: ${err.message}`, true);
+        }
+      },
+    });
+  }
+
+  async function duplicateEntry(entry) {
+    try {
+      const res = await post('/api/fs/duplicate', { root: S.folder, path: entry.path });
+      toast(`created ${res.name}`);
+      await showFiles();
+      refreshGit();
+    } catch (err) {
+      toast(`could not duplicate: ${err.message}`, true);
+    }
+  }
+
   async function deleteEntry(entry) {
     const kind = entry.dir ? 'folder' : 'file';
     if (!confirm(`Delete this ${kind}?\n\n${entry.path}\n\nThis cannot be undone.`)) return;
     try {
-      await post('/api/fs/delete', { root: S.fileRoot, path: entry.path, recursive: false });
+      await post('/api/fs/delete', { root: S.folder, path: entry.path, recursive: false });
     } catch (err) {
       // A non-empty folder is a second question, not a failure.
       if (entry.dir && /not empty/.test(err.message)) {
         if (!confirm(`${entry.name} is not empty. Delete it and everything inside?`)) return;
         try {
-          await post('/api/fs/delete', {
-            root: S.fileRoot,
-            path: entry.path,
-            recursive: true,
-          });
+          await post('/api/fs/delete', { root: S.folder, path: entry.path, recursive: true });
         } catch (err2) {
           toast(`could not delete: ${err2.message}`, true);
           return;
@@ -968,361 +825,563 @@
       }
     }
     EXPANDED.delete(entry.path);
+    const tabKey = `file:${entry.path}`;
+    if (S.tabs.some((t) => t.key === tabKey)) {
+      window.Editor.closeFile(entry.path);
+      S.tabs = S.tabs.filter((t) => t.key !== tabKey);
+      activateTab(S.tabs.length ? S.tabs[S.tabs.length - 1].key : null);
+    }
     toast(`deleted ${entry.name}`);
     await showFiles();
+    refreshGit();
   }
 
-  /**
-   * Show what an agent edit changed.
-   *
-   * The transcript records the edit, not the file's before/after state, so we
-   * reconstruct: read the file as it stands now and apply the edit backwards.
-   * If the file is gone (a transcript from another machine), fall back to
-   * diffing the edit's own old_string against new_string, which still shows the
-   * change itself, just without surrounding context.
-   */
-  async function openDiff(ev) {
-    const input = ev.tool_input || {};
-    const path = input.file_path || input.path;
-    if (!path) {
-      toast('that edit has no file path to diff');
+  // ======================================================================
+  // search
+  // ======================================================================
+
+  const SEARCH = { query: '', include: '', case: false, word: false, regex: false, open: new Set() };
+  let searchTimer = null;
+
+  function showSearch() {
+    const host = $('sidebar-scroll');
+    $('sidebar-title').textContent = 'Search';
+    if (!S.folder) {
+      host.innerHTML = '';
+      host.appendChild(openFolderPrompt());
       return;
     }
-    const label = path.split('/').pop();
-    let after = null;
-    try {
-      const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
-      if (!data.binary) after = data.text;
-    } catch {
-      /* file not on this machine — handled below */
-    }
+    host.innerHTML = '';
+    const panel = el(`
+      <div class="search-panel">
+        <input class="search-input" id="search-q" spellcheck="false" placeholder="Search" />
+        <div class="search-opts">
+          <button class="opt" data-opt="case" title="Match case">Aa</button>
+          <button class="opt" data-opt="word" title="Match whole word">ab|</button>
+          <button class="opt" data-opt="regex" title="Use regular expression">.*</button>
+        </div>
+        <input class="search-input small" id="search-include" spellcheck="false"
+               placeholder="files to include — *.py, src/**" />
+        <div class="search-summary" id="search-summary"></div>
+        <div class="search-results" id="search-results"></div>
+      </div>`);
+    host.appendChild(panel);
 
-    let before;
-    if (ev.tool_name === 'Write') {
-      before = after !== null && after !== input.content ? after : '';
-      after = input.content ?? '';
-    } else if (after !== null && input.old_string && after.includes(input.new_string ?? '')) {
-      // Un-apply the edit to reconstruct the previous file contents.
-      before = after.replace(input.new_string, input.old_string);
-    } else {
-      before = input.old_string ?? '';
-      after = input.new_string ?? after ?? '';
-      toast(`${label} isn't on this machine — showing the edit without context`);
+    const q = panel.querySelector('#search-q');
+    const include = panel.querySelector('#search-include');
+    q.value = SEARCH.query;
+    include.value = SEARCH.include;
+    for (const btn of panel.querySelectorAll('.opt')) {
+      btn.classList.toggle('on', SEARCH[btn.dataset.opt]);
+      btn.addEventListener('click', () => {
+        SEARCH[btn.dataset.opt] = !SEARCH[btn.dataset.opt];
+        btn.classList.toggle('on', SEARCH[btn.dataset.opt]);
+        runSearch();
+      });
     }
-
-    openTab({
-      key: `diff:${ev.tool_use_id || path}`,
-      label: `${label} (diff)`,
-      view: 'diff',
-      payload: { path, before, after },
+    const debounced = () => {
+      SEARCH.query = q.value;
+      SEARCH.include = include.value;
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(runSearch, 220);
+    };
+    q.addEventListener('input', debounced);
+    include.addEventListener('input', debounced);
+    q.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        clearTimeout(searchTimer);
+        runSearch();
+      }
     });
+    q.focus();
+    if (SEARCH.query) runSearch();
+  }
+
+  async function runSearch() {
+    const results = $('search-results');
+    const summary = $('search-summary');
+    if (!results) return;
+    if (!SEARCH.query) {
+      results.innerHTML = '';
+      summary.textContent = '';
+      return;
+    }
+    summary.textContent = 'searching…';
+    const qs = new URLSearchParams({
+      root: S.folder,
+      q: SEARCH.query,
+      regex: String(SEARCH.regex),
+      case: String(SEARCH.case),
+      word: String(SEARCH.word),
+      include: SEARCH.include,
+    });
+    let data;
     try {
-      await window.Editor.openDiff(path, before, after);
+      data = await api(`/api/search/text?${qs}`);
     } catch (err) {
-      toast(`diff failed: ${err.message}`, true);
+      summary.textContent = err.message;
+      results.innerHTML = '';
+      return;
+    }
+    summary.textContent = data.matches
+      ? `${data.matches} result${data.matches === 1 ? '' : 's'} in ${data.files.length} file${
+          data.files.length === 1 ? '' : 's'
+        }${data.truncated ? ' (truncated)' : ''}`
+      : 'No results';
+    results.innerHTML = '';
+    for (const file of data.files) {
+      const open = SEARCH.open.has(file.path) || data.files.length <= 12;
+      const group = el(`
+        <div class="sr-group${open ? ' open' : ''}">
+          <div class="sr-head">
+            <span class="chevron">${window.Icons[open ? 'chevronDown' : 'chevronRight']}</span>
+            <span class="ticon">${window.FileIcons.forFile(base(file.path))}</span>
+            <span class="sr-path" title="${esc(file.path)}">${esc(base(file.path))}</span>
+            <span class="sr-dir">${esc(file.path.split('/').slice(0, -1).join('/'))}</span>
+            <span class="count">${file.count}</span>
+          </div>
+          <div class="sr-rows"></div>
+        </div>`);
+      group.querySelector('.sr-head').addEventListener('click', () => {
+        const nowOpen = !group.classList.contains('open');
+        group.classList.toggle('open', nowOpen);
+        group.querySelector('.chevron').innerHTML =
+          window.Icons[nowOpen ? 'chevronDown' : 'chevronRight'];
+        if (nowOpen) SEARCH.open.add(file.path);
+        else SEARCH.open.delete(file.path);
+      });
+      const rows = group.querySelector('.sr-rows');
+      for (const m of file.matches) {
+        const before = m.text.slice(0, m.column);
+        const hit = m.text.slice(m.column, m.end);
+        const after = m.text.slice(m.end);
+        const row = el(`
+          <div class="sr-row" title="line ${m.line}">
+            <span class="sr-line">${m.line}</span>
+            <span class="sr-text">${esc(before.trimStart())}<mark>${esc(hit)}</mark>${esc(
+              after
+            )}</span>
+          </div>`);
+        row.addEventListener('click', () =>
+          openFile(`${S.folder}/${file.path}`, base(file.path), { line: m.line })
+        );
+        rows.appendChild(row);
+      }
+      results.appendChild(group);
     }
   }
 
-  async function openFile(path, label) {
+  // ======================================================================
+  // source control
+  // ======================================================================
+
+  async function refreshGit() {
+    if (!S.folder) {
+      S.git = null;
+      paintBranch();
+      return;
+    }
     try {
-      const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
-      if (data.binary) {
-        toast('binary file — not opening');
+      S.git = await api(`/api/git/status?repo=${encodeURIComponent(S.folder)}`);
+    } catch {
+      S.git = null;
+    }
+    paintBranch();
+    if (S.activeView === 'scm') showScm();
+    renderActivityBar();
+  }
+
+  function paintBranch() {
+    const node = $('status-branch');
+    if (!S.git || !S.git.is_repo) {
+      node.textContent = S.folder ? 'not a repo' : '';
+      node.title = '';
+      return;
+    }
+    const divergence = [
+      S.git.behind ? `↓${S.git.behind}` : '',
+      S.git.ahead ? `↑${S.git.ahead}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    node.textContent = `${S.git.branch}${divergence ? ' ' + divergence : ''}`;
+    node.title = S.git.upstream ? `tracking ${S.git.upstream}` : 'no upstream';
+  }
+
+  async function showScm() {
+    const host = $('sidebar-scroll');
+    $('sidebar-title').textContent = 'Source Control';
+    if (!S.folder) {
+      host.innerHTML = '';
+      host.appendChild(openFolderPrompt());
+      return;
+    }
+    if (!S.git) S.git = await api(`/api/git/status?repo=${encodeURIComponent(S.folder)}`);
+
+    host.innerHTML = '';
+    if (!S.git.is_repo) {
+      const prompt = el(`
+        <div class="empty-state">
+          <p><code>${esc(base(S.folder))}</code> is not a git repository.</p>
+          <button class="btn small">git init</button>
+        </div>`);
+      prompt.querySelector('button').addEventListener('click', async () => {
+        try {
+          await post('/api/git/init', { repo: S.folder });
+          toast('initialised a repository');
+          await refreshGit();
+          showScm();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+      host.appendChild(prompt);
+      return;
+    }
+
+    host.appendChild(scmToolbar());
+    host.appendChild(commitBox());
+    const staged = S.git.staged || [];
+    const changes = S.git.changes || [];
+    if (!staged.length && !changes.length) {
+      host.appendChild(el('<div class="empty-state"><p>No changes.</p></div>'));
+    }
+    if (staged.length) host.appendChild(changeGroup('Staged Changes', staged, true));
+    if (changes.length) host.appendChild(changeGroup('Changes', changes, false));
+  }
+
+  function scmToolbar() {
+    const bar = el(`
+      <div class="tree-toolbar scm-toolbar">
+        <span class="tree-root" title="${esc(S.git.upstream || 'no upstream')}">${esc(
+          S.git.branch
+        )}</span>
+        <button class="tree-act" data-act="branch" title="Switch branch">Branch</button>
+        <button class="tree-act" data-act="pull" title="Pull (fast-forward only)">Pull</button>
+        <button class="tree-act" data-act="push" title="Push to origin">Push</button>
+      </div>`);
+    const act = async (name, fn) => {
+      const btn = bar.querySelector(`[data-act="${name}"]`);
+      btn.disabled = true;
+      try {
+        const res = await fn();
+        toast(res.output ? res.output.split('\n').slice(-1)[0] : `${name} done`);
+      } catch (err) {
+        toast(`${name} failed: ${err.message}`, true);
+      } finally {
+        btn.disabled = false;
+        await refreshGit();
+      }
+    };
+    bar
+      .querySelector('[data-act="pull"]')
+      .addEventListener('click', () => act('pull', () => post('/api/git/pull', { repo: S.folder })));
+    bar
+      .querySelector('[data-act="push"]')
+      .addEventListener('click', () => act('push', () => post('/api/git/push', { repo: S.folder })));
+    bar.querySelector('[data-act="branch"]').addEventListener('click', showBranchMenu);
+    return bar;
+  }
+
+  async function showBranchMenu(e) {
+    let data;
+    try {
+      data = await api(`/api/git/branches?repo=${encodeURIComponent(S.folder)}`);
+    } catch (err) {
+      toast(err.message, true);
+      return;
+    }
+    const checkout = async (name, create) => {
+      try {
+        await post('/api/git/checkout', { repo: S.folder, name, create });
+        toast(`on ${name}`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+      await refreshGit();
+      if (S.activeView === 'files') showFiles();
+    };
+    const items = [
+      // Electron has no prompt(), so the name is asked for with the same inline
+      // input the file tree uses.
+      { label: 'New Branch…', action: () => askBranchName((value) => checkout(value, true)) },
+      { separator: true },
+      ...data.local.slice(0, 15).map((b) => ({
+        label: (b.name === data.current ? '● ' : '　') + b.name,
+        hint: b.when,
+        action: () => checkout(b.name, false),
+      })),
+    ];
+    window.ContextMenu.show(e.clientX, e.clientY, items);
+  }
+
+  function askBranchName(onName) {
+    const host = $('sidebar-scroll');
+    askForName({
+      anchor: host,
+      depth: 0,
+      directory: false,
+      placeholder: 'new branch name',
+      onName,
+    });
+    host.scrollTop = 0;
+  }
+
+  function commitBox() {
+    const box = el(`
+      <div class="commit-box">
+        <textarea id="commit-msg" rows="2" spellcheck="false"
+                  placeholder="Message (${MOD}+Enter to commit)"></textarea>
+        <div class="commit-row">
+          <button class="btn small secondary" id="btn-stage-all">Stage All</button>
+          <button class="btn small" id="btn-commit">Commit</button>
+        </div>
+      </div>`);
+    const doCommit = async () => {
+      const msg = box.querySelector('#commit-msg').value.trim();
+      if (!msg) {
+        toast('a commit message is required');
         return;
       }
-      if (data.truncated) {
-        S.truncatedFiles.add(path);
-        toast(
-          `${path.split('/').pop()} is too large to load in full — opened read-only`,
-          true
-        );
-      } else {
-        S.truncatedFiles.delete(path);
-      }
-      // Load the buffer *before* opening the tab. openTab activates the tab
-      // synchronously, and that activation also asks the editor to show this
-      // path — if the model does not exist yet, the two race and the file can
-      // open blank.
-      clearTimeout(autoSaveTimer);
-      S.openFilePath = path;
-      await window.Editor.openFile(path, data.text, {
-        readOnly: Boolean(data.truncated),
-        onRun: runOpenFile,
-        onSave: saveOpenFile,
-        onDirty: (dirty) => {
-          // `Editor.current()` rather than the captured `path`: these handlers
-          // outlive the open that installed them, because the editor is reused.
-          const active = window.Editor.current();
-          markTabDirty(`file:${active}`, dirty);
-          if (dirty) scheduleAutoSave(active);
-        },
-        onBlur: autoSaveOnBlur,
-      });
-      openTab({
-        key: `file:${path}`,
-        label: label || path.split('/').pop(),
-        view: 'editor',
-        // Only the path: the buffer lives in Monaco's model from here on. A
-        // text snapshot in the tab would go stale the moment you typed, and
-        // re-seeding from it on a tab switch is how edits used to disappear.
-        payload: { path },
-      });
-      refreshRunnable(path);
-    } catch (err) {
-      toast(`could not open file: ${err.message}`, true);
-    }
-  }
-
-  // ======================================================================
-  // activity bar
-  // ======================================================================
-
-  const ACTIVITIES = [
-    { id: 'sessions', icon: 'sessions', title: 'Sessions', onSelect: showSessions },
-    { id: 'files', icon: 'files', title: 'Explorer', onSelect: showFiles },
-    // PARKED (thesis realignment, Aug 2026) --------------------------------
-    // These three panels are the MCP-compression product: tool loadout, the
-    // MCP->skill converter, tool residency/proxy, workflow mining, capability
-    // search. They all work and they all still have passing tests -- they are
-    // parked, not deleted, because the bet changed, not the code quality.
-    // See IDEAS.md. Restore by uncommenting these three lines; every function
-    // and endpoint behind them is untouched.
-    // { id: 'loadout', icon: 'loadout', title: 'Tool loadout', onSelect: showLoadout },
-    // { id: 'mining', icon: 'mining', title: 'Mined workflows', onSelect: showMining },
-    // { id: 'library', icon: 'library', title: 'Capability library', onSelect: showLibrary },
-    // ----------------------------------------------------------------------
-    { id: 'terminal', icon: 'terminal', title: 'Terminal', onSelect: togglePanel },
-    { id: 'settings', icon: 'settings', title: 'Settings', onSelect: showSettings },
-  ];
-
-  // ======================================================================
-  // Loadout / mining / library  (features 2-5)
-  // ======================================================================
-
-  /** Open (or re-render) a panel tab backed by a fetch + a renderer. */
-  function openPanelTab(key, label, render) {
-    openTab({ key, label, view: 'panel', render });
-  }
-
-  function loadoutRepo() {
-    return currentRepoPath() || $('composer-target').value;
-  }
-
-  async function showLoadout() {
-    const repo = loadoutRepo();
-    if (!repo) {
-      toast('no repo on this machine to inspect', true);
-      return;
-    }
-    openPanelTab('loadout:' + repo, `Loadout · ${repo.split('/').pop()}`, async (host) => {
-      host.innerHTML = '<div class="inspector"><p class="muted">Probing MCP servers…</p></div>';
+      const hasStaged = (S.git.staged || []).length > 0;
       try {
-        const data = await api(
-          `/api/loadout?repo=${encodeURIComponent(repo)}&probe=${window.Settings.get().probeMcp}`
-        );
-        // The proxy's own state is a cheap read (no probing), so it rides along
-        // rather than owning a panel: residency is part of the loadout, not a
-        // separate idea.
-        try {
-          data.proxy = await api(`/api/proxy?repo=${encodeURIComponent(repo)}`);
-        } catch {
-          data.proxy = null;
+        await post('/api/git/commit', {
+          repo: S.folder,
+          message: msg,
+          // Committing with nothing staged should do what the button implies
+          // rather than erroring: stage the tracked edits and commit those.
+          stage_all: !hasStaged,
+        });
+        toast('committed');
+        box.querySelector('#commit-msg').value = '';
+      } catch (err) {
+        toast(`commit failed: ${err.message}`, true);
+      }
+      await refreshGit();
+      showScm();
+    };
+    box.querySelector('#btn-commit').addEventListener('click', doCommit);
+    box.querySelector('#commit-msg').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        doCommit();
+      }
+    });
+    box.querySelector('#btn-stage-all').addEventListener('click', async () => {
+      try {
+        await post('/api/git/stage', { repo: S.folder, paths: [] });
+      } catch (err) {
+        toast(err.message, true);
+      }
+      await refreshGit();
+      showScm();
+    });
+    return box;
+  }
+
+  function changeGroup(title, files, staged) {
+    const group = el(`
+      <div class="repo-group">
+        <div class="repo-header">
+          <span class="chevron">${window.Icons.chevronDown}</span>
+          <span class="repo-name">${esc(title)}</span>
+          <span class="count">${files.length}</span>
+        </div>
+        <div class="repo-sessions"></div>
+      </div>`);
+    group.querySelector('.repo-header').addEventListener('click', () =>
+      group.classList.toggle('collapsed')
+    );
+    const list = group.querySelector('.repo-sessions');
+    for (const f of files) list.appendChild(changeRow(f, staged));
+    return group;
+  }
+
+  function changeRow(f, staged) {
+    const row = el(`
+      <div class="tree-row change-row" title="${esc(f.path)}">
+        <span class="ticon">${window.FileIcons.forFile(base(f.path))}</span>
+        <span class="tname">${esc(base(f.path))}</span>
+        <span class="tsize change-dir">${esc(f.path.split('/').slice(0, -1).join('/'))}</span>
+        ${
+          staged
+            ? `<button class="row-add" data-act="unstage" title="Unstage">${window.Icons.minus}</button>`
+            : `<button class="row-add" data-act="discard" title="Discard changes">${window.Icons.discard}</button>
+               <button class="row-add" data-act="stage" title="Stage">${window.Icons.plus}</button>`
         }
-        window.Panels.renderLoadout(host, data, {
-          toggleMcp: async (name, enabled) => {
-            await api('/api/loadout/mcp', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ repo, name, enabled }),
-            });
-            toast(`${name} ${enabled ? 'attached' : 'detached'}`);
-            showLoadout();
-          },
-          toggleSkill: async (name, enabled) => {
-            await api('/api/loadout/skill', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ repo, name, enabled }),
-            });
-            showLoadout();
-          },
-          testMcp: (name, config) => post('/api/loadout/mcp/test', { repo, name, config }),
-          saveMcp: async (name, config, scope) => {
-            const res = await post('/api/loadout/mcp/save', { repo, name, config, scope });
-            toast(`saved ${res.name} · ${res.written}`);
-            showLoadout();
-          },
-          deleteMcp: async (name, source) => {
-            const where = source === '.mcp.json' ? 'the checked-in .mcp.json' : 'your local config';
-            if (!confirm(`Remove ${name} from ${where}?`)) return;
-            await post('/api/loadout/mcp/delete', { repo, name });
-            toast(`removed ${name}`);
-            showLoadout();
-          },
-          refreshProxy: async () => {
-            host.innerHTML =
-              '<div class="inspector"><p class="muted">Probing every server for its tools…</p></div>';
-            const res = await post('/api/proxy/refresh', { repo });
-            toast(`indexed ${res.tools} tools across ${res.servers} servers`);
-            showLoadout();
-          },
-          activateGroup: async (name) => {
-            const res = await post('/api/proxy/activate', { repo, name });
-            toast(`${name} active · ${res.resident_tools} tools resident`);
-            showLoadout();
-          },
-          newGroup: async () => {
-            const name = prompt('Name this group (e.g. "debugging", "release")');
-            if (!name) return;
-            await post('/api/proxy/group', { repo, name, tools: {}, activate: true });
-            toast(`${name} created — pick the tools worth carrying`);
-            showLoadout();
-          },
-          setGroupTools: async (name, tools) => {
-            const res = await post('/api/proxy/group', { repo, name, tools });
-            toast(`${res.resident_tools} tools resident · ~${res.after_tokens} tokens/turn`);
-            showLoadout();
-          },
-          installProxy: async () => {
-            host.innerHTML =
-              '<div class="inspector"><p class="muted">Installing the proxy…</p></div>';
-            const res = await post('/api/proxy/install', { repo });
-            toast(
-              `proxy installed · detached ${res.detached.length} server(s) · ` +
-                `saving ~${res.saved_tokens} tokens per turn`
-            );
-            showLoadout();
-          },
-          uninstallProxy: async () => {
-            if (!confirm('Remove the proxy and re-attach the servers it fronts?')) return;
-            const res = await post('/api/proxy/uninstall', { repo, reattach: true });
-            toast(`proxy removed · re-attached ${res.reattached.join(', ') || 'nothing'}`);
-            showLoadout();
-          },
-          previewConversion: async (name) => {
-            host.innerHTML =
-              '<div class="inspector"><p class="muted">Generating skill…</p></div>';
-            const preview = await api('/api/mcp/preview', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ repo, name }),
-            });
-            window.Panels.renderConversionPreview(host, preview, {
-              cancel: showLoadout,
-              confirmConversion: async (serverName) => {
-                const res = await api('/api/mcp/convert', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ repo, name: serverName, disable_after: true }),
-                });
-                toast(
-                  `wrote ${res.slug} skill · saved ~${res.saved_tokens} tokens per turn`
-                );
-                showLoadout();
-              },
-            });
-          },
-        });
-      } catch (err) {
-        host.innerHTML = `<div class="inspector"><p class="muted">${err.message}</p></div>`;
-      }
-    });
-  }
+        <span class="change-flag ${esc(f.label)}">${esc((f.label || '?')[0].toUpperCase())}</span>
+      </div>`);
 
-  async function showMining() {
-    const repo = loadoutRepo();
-    const qs = repo ? `?repo=${encodeURIComponent(repo)}&limit=20` : '?limit=20';
-    openPanelTab('mining', 'Mined workflows', async (host) => {
-      host.innerHTML = '<div class="inspector"><p class="muted">Diffing transcripts…</p></div>';
+    row.addEventListener('click', () => openGitDiff(f, staged));
+
+    const run = async (fn) => {
       try {
-        let data = await api('/api/mining' + qs);
-        // A single repo often has too little history; fall back to everything
-        // rather than showing an empty panel that looks broken.
-        if (!data.candidates.length && repo) data = await api('/api/mining?limit=20');
-        window.Panels.renderMining(host, data, {
-          acceptMined: async (c, opts = {}) => {
-            const scope = opts.scope || 'repo';
-            const target = repo || c.repos[0];
-            if (scope === 'repo' && !target) {
-              throw new Error('no repo on this machine to write the skill into');
-            }
-            const payload = {
-              repo: target || '',
-              slug: opts.slug || c.proposed_skill.slug,
-              skill_md: c.proposed_skill.skill_md,
-              scope,
-            };
-            let res;
-            try {
-              res = await post('/api/mining/accept', payload);
-            } catch (err) {
-              // A name collision is a question, not a failure: the usual answer
-              // is "yes, replace the older version of the same workflow".
-              if (!/already exists/.test(err.message)) throw err;
-              if (!confirm(`${payload.slug} already exists. Replace it?`)) return;
-              res = await post('/api/mining/accept', { ...payload, overwrite: true });
-            }
-            toast(`created ${res.slug} — available to ${res.available_to}`);
-            return res;
-          },
-        });
+        await fn();
       } catch (err) {
-        host.innerHTML = `<div class="inspector"><p class="muted">${err.message}</p></div>`;
+        toast(err.message, true);
+      }
+      await refreshGit();
+      showScm();
+    };
+    row.querySelector('[data-act="stage"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      run(() => post('/api/git/stage', { repo: S.folder, paths: [f.path] }));
+    });
+    row.querySelector('[data-act="unstage"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      run(() => post('/api/git/unstage', { repo: S.folder, paths: [f.path] }));
+    });
+    row.querySelector('[data-act="discard"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const what = f.untracked ? `Delete ${f.path}?` : `Discard all changes to ${f.path}?`;
+      if (!confirm(`${what}\n\nThis cannot be undone.`)) return;
+      run(() => post('/api/git/discard', { repo: S.folder, paths: [f.path] }));
+    });
+
+    window.ContextMenu.attach(row, () => [
+      { label: 'Open File', action: () => openFile(`${S.folder}/${f.path}`, base(f.path)) },
+      { label: 'Open Changes', action: () => openGitDiff(f, staged) },
+      { separator: true },
+      staged
+        ? {
+            label: 'Unstage',
+            action: () => run(() => post('/api/git/unstage', { repo: S.folder, paths: [f.path] })),
+          }
+        : {
+            label: 'Stage',
+            action: () => run(() => post('/api/git/stage', { repo: S.folder, paths: [f.path] })),
+          },
+      { label: 'Copy Path', action: () => navigator.clipboard.writeText(`${S.folder}/${f.path}`) },
+      { separator: true },
+      {
+        label: f.untracked ? 'Delete File' : 'Discard Changes',
+        danger: true,
+        action: () => {
+          if (!confirm(`Discard changes to ${f.path}?\n\nThis cannot be undone.`)) return;
+          run(() => post('/api/git/discard', { repo: S.folder, paths: [f.path] }));
+        },
+      },
+    ]);
+    return row;
+  }
+
+  /** Side-by-side: what HEAD (or the index) has versus what you have. */
+  async function openGitDiff(f, staged) {
+    const full = `${S.folder}/${f.path}`;
+    try {
+      const sides = await api(
+        `/api/git/diff?repo=${encodeURIComponent(S.folder)}&path=${encodeURIComponent(
+          f.path
+        )}&staged=${staged ? 'true' : 'false'}`
+      );
+      const key = `git:${staged ? 'index' : 'work'}:${f.path}`;
+      openTab({
+        key,
+        label: `${base(f.path)} (${staged ? 'staged' : 'diff'})`,
+        title: full,
+        view: 'diff',
+        payload: { path: full, before: sides.before, after: sides.after, key },
+      });
+    } catch (err) {
+      toast(`could not diff: ${err.message}`, true);
+    }
+  }
+
+  // ======================================================================
+  // quick open  (Cmd+P)
+  // ======================================================================
+
+  const QUICK = { open: false, results: [], index: 0 };
+
+  function toggleQuickOpen(force) {
+    const want = force === undefined ? !QUICK.open : force;
+    QUICK.open = want;
+    let node = $('quickopen');
+    if (!want) {
+      node?.remove();
+      return;
+    }
+    if (!S.folder) {
+      toast('open a folder first');
+      QUICK.open = false;
+      return;
+    }
+    node = el(`
+      <div id="quickopen">
+        <input id="qo-input" spellcheck="false" placeholder="Go to file…" />
+        <div id="qo-list"></div>
+      </div>`);
+    document.body.appendChild(node);
+    const input = node.querySelector('#qo-input');
+    input.addEventListener('input', () => queryQuickOpen(input.value));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') return toggleQuickOpen(false);
+      if (e.key === 'ArrowDown' || (e.key === 'n' && e.ctrlKey)) {
+        e.preventDefault();
+        QUICK.index = Math.min(QUICK.index + 1, QUICK.results.length - 1);
+        paintQuickOpen();
+      }
+      if (e.key === 'ArrowUp' || (e.key === 'p' && e.ctrlKey)) {
+        e.preventDefault();
+        QUICK.index = Math.max(QUICK.index - 1, 0);
+        paintQuickOpen();
+      }
+      if (e.key === 'Enter') {
+        const hit = QUICK.results[QUICK.index];
+        if (hit) {
+          toggleQuickOpen(false);
+          openFile(`${S.folder}/${hit.path}`, base(hit.path));
+        }
       }
     });
+    node.addEventListener('pointerdown', (e) => {
+      if (e.target === node) toggleQuickOpen(false);
+    });
+    input.focus();
+    queryQuickOpen('');
   }
 
-  /**
-   * Delete a session's transcript.
-   *
-   * The transcript is the only record of the conversation, so this asks first
-   * and says what it is about to destroy.
-   */
-  async function deleteSession(sessionId, label) {
-    const what = label && label.length > 60 ? label.slice(0, 60) + '…' : label;
-    if (!confirm(`Delete this session permanently?\n\n${what}\n\nIts transcript is the only record — this cannot be undone.`)) {
-      return;
-    }
+  async function queryQuickOpen(q) {
     try {
-      const res = await api(`/api/sessions/${sessionId}`, { method: 'DELETE' });
-      toast(`deleted ${res.title ? '“' + res.title.slice(0, 40) + '”' : sessionId.slice(0, 8)}`);
-      if (S.selected?.type === 'session' && S.selected.id === sessionId) {
-        S.selected = null;
-        closeTab(`ctx:${sessionId}`);
-        if (S.chatCwd) showChat(S.chatCwd);
-      }
-      await refresh();
+      const data = await api(
+        `/api/search/files?root=${encodeURIComponent(S.folder)}&q=${encodeURIComponent(q)}`
+      );
+      QUICK.results = data.results;
+      QUICK.index = 0;
+      paintQuickOpen();
     } catch (err) {
-      toast(`could not delete: ${err.message}`, true);
+      const list = $('qo-list');
+      if (list) list.innerHTML = `<div class="qo-empty">${esc(err.message)}</div>`;
     }
   }
 
-  /** Start a fresh conversation, and put the panel on it. */
-  async function newSession() {
-    const cwd = $('composer-target').value || currentRepoPath();
-    if (!cwd) {
-      toast('no repo on this machine to start a session in', true);
+  function paintQuickOpen() {
+    const list = $('qo-list');
+    if (!list) return;
+    if (!QUICK.results.length) {
+      list.innerHTML = '<div class="qo-empty">No matching files</div>';
       return;
     }
-    // A repo's chat is its conversation; dropping the old one starts a new one.
-    const old = CHATS.get(cwd);
-    if (old) {
-      old.dispose();
-      CHATS.delete(cwd);
-      post(`/api/chats/${old.meta.chat_id}/close`, {}).catch(() => {});
-    }
-    await showChat(cwd);
-    toast(`new session in ${cwd.split('/').pop()}`);
+    list.innerHTML = '';
+    QUICK.results.forEach((r, i) => {
+      const row = el(`
+        <div class="qo-row${i === QUICK.index ? ' active' : ''}">
+          <span class="ticon">${window.FileIcons.forFile(base(r.path))}</span>
+          <span class="qo-name">${esc(base(r.path))}</span>
+          <span class="qo-dir">${esc(r.path.split('/').slice(0, -1).join('/'))}</span>
+        </div>`);
+      row.addEventListener('click', () => {
+        toggleQuickOpen(false);
+        openFile(`${S.folder}/${r.path}`, base(r.path));
+      });
+      list.appendChild(row);
+    });
+    list.querySelector('.qo-row.active')?.scrollIntoView({ block: 'nearest' });
   }
 
   // ======================================================================
   // Chat — the agent panel *is* the conversation
   // ======================================================================
-  //
-  // The panel has two jobs and one set of elements: it shows a live chat, and
-  // it shows a read-only transcript when you open a past session. `S.panelMode`
-  // says which, so the composer knows whether Send means "talk to Claude" and
-  // the log knows whether it is safe to overwrite.
 
   const CHATS = new Map(); // cwd -> handle
 
@@ -1330,7 +1389,7 @@
     return S.chatCwd ? CHATS.get(S.chatCwd) : null;
   }
 
-  /** The chat for a repo, started if this is the first time we need it. */
+  /** The chat for a folder, started if this is the first time we need it. */
   async function chatFor(cwd) {
     const existing = CHATS.get(cwd);
     if (existing) return existing;
@@ -1343,10 +1402,9 @@
       els: { log: $('agent-log') },
       api,
       wsUrl: (id) => `${S.api.replace(/^http/, 'ws')}/ws/chats/${id}`,
-      onDiff: openDiff,
+      onDiff: openAgentDiff,
       onMeta: (m) => {
-        // Only the chat currently on screen may drive the panel's chrome.
-        if (S.panelMode === 'chat' && S.chatCwd === m.cwd) paintChatHeader(m);
+        if (S.chatCwd === m.cwd) paintChatHeader(m);
       },
     });
     CHATS.set(cwd, handle);
@@ -1354,24 +1412,20 @@
   }
 
   function paintChatHeader(m) {
-    setAgentHeader({
-      title: m.repo_name || m.cwd.split('/').pop(),
-      meta: window.Chat.STATUS_LABEL[m.status] || m.status,
-      status: m.status === 'running' ? 'running' : m.status === 'needs_input' ? 'needs_input' : m.status === 'failed' ? 'failed' : 'idle',
-    });
+    $('agent-title').textContent = m.repo_name || base(m.cwd);
+    $('agent-meta').textContent = window.Chat.STATUS_LABEL[m.status] || m.status;
+    $('agent-dot').className = `dot ${
+      ['running', 'needs_input', 'failed'].includes(m.status) ? m.status : 'idle'
+    }`;
     $('chat-mode').value = m.permission_mode;
     const busy = m.status === 'running' || m.status === 'starting';
     $('btn-send').disabled = busy;
     $('btn-stop').style.display = busy ? '' : 'none';
   }
 
-  /** Bring the live conversation for *cwd* back onto the panel. */
   async function showChat(cwd) {
-    cwd = cwd || $('composer-target').value || currentRepoPath();
-    if (!cwd) {
-      toast('no repo on this machine to chat about — pick one in the dropdown', true);
-      return;
-    }
+    cwd = cwd || S.folder;
+    if (!cwd) return;
     let handle;
     try {
       handle = await chatFor(cwd);
@@ -1379,30 +1433,24 @@
       toast(`could not start a chat: ${err.message}`, true);
       return;
     }
-    S.panelMode = 'chat';
     S.chatCwd = cwd;
-    closeWs(); // stop tailing a transcript into the same log
-    if ($('composer-target').value !== cwd) $('composer-target').value = cwd;
     handle.repaint();
     paintChatHeader(handle.meta);
     updateComposerHint();
-    $('btn-back-to-chat').style.display = 'none';
     $('composer-input').focus();
   }
 
-  /** Send the composer's contents as a chat turn. */
   async function sendChat() {
     const text = $('composer-input').value.trim();
     if (!text) {
       toast('type something for Claude to do first');
       return;
     }
-    const cwd = $('composer-target').value || currentRepoPath();
-    if (!cwd) {
-      toast('no runnable repo — none of these transcripts point at a path on this machine', true);
+    if (!S.folder) {
+      toast('open a folder first', true);
       return;
     }
-    if (S.panelMode !== 'chat' || S.chatCwd !== cwd) await showChat(cwd);
+    if (S.chatCwd !== S.folder) await showChat(S.folder);
     const handle = activeChat();
     if (!handle) return;
     $('composer-input').value = '';
@@ -1426,111 +1474,81 @@
       toast('type a command to run first');
       return;
     }
-    const cwd = $('composer-target').value || currentRepoPath();
-    if (!cwd) {
-      toast('no repo on this machine to run in', true);
+    if (!S.folder) {
+      toast('open a folder first', true);
       return;
     }
-    if (!window.Term.available()) {
-      toast('terminal unavailable — see the console', true);
-      return;
-    }
-    togglePanel(true);
-    const opened = await window.Term.open(cwd);
-    if (opened && opened.ok === false) {
-      toast(opened.error, true);
-      return;
-    }
-    // A freshly spawned pty has not drawn its prompt yet; typing immediately
-    // races the shell and the line can be swallowed.
-    setTimeout(
-      () => {
-        if (!window.Term.send(cwd, command)) toast('terminal went away before launch', true);
-      },
-      opened && opened.reused ? 0 : 400
-    );
+    await sendToTerminal(S.folder, command);
     $('composer-input').value = '';
   }
 
   async function stopChat() {
     const handle = activeChat();
-    if (S.panelMode === 'chat' && handle) {
-      await handle.interrupt();
+    if (handle) await handle.interrupt();
+  }
+
+  /**
+   * Show what an agent edit changed.
+   *
+   * The transcript records the edit, not the file's before/after state, so we
+   * reconstruct: read the file as it stands now and apply the edit backwards.
+   */
+  async function openAgentDiff(ev) {
+    const input = ev.tool_input || {};
+    const path = input.file_path || input.path;
+    if (!path) {
+      toast('that edit has no file path to diff');
       return;
     }
-    stopRun(); // a terminal session is stopped with Ctrl-C, as before
-  }
+    const label = base(path);
+    let after = null;
+    try {
+      const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
+      if (!data.binary) after = data.text;
+    } catch {
+      /* file not on this machine — handled below */
+    }
 
-  async function showSettings() {
-    openPanelTab('settings', 'Settings', (host) => {
-      window.Settings.render(host, {
-        config: S.config || {},
-        onResetLayout: () => {
-          window.Resize.reset();
-          toast('pane sizes reset');
-        },
-        onClearChats: async () => {
-          const open = [...CHATS.keys()];
-          if (!open.length) {
-            toast('no chats open');
-            return;
-          }
-          if (!confirm(`Close ${open.length} conversation${open.length === 1 ? '' : 's'}?`)) return;
-          for (const cwd of open) {
-            const handle = CHATS.get(cwd);
-            handle.dispose();
-            CHATS.delete(cwd);
-            post(`/api/chats/${handle.meta.chat_id}/close`, {}).catch(() => {});
-          }
-          S.chatCwd = null;
-          $('agent-log').innerHTML = '';
-          toast(`closed ${open.length}`);
-        },
-      });
+    let before;
+    if (ev.tool_name === 'Write') {
+      before = after !== null && after !== input.content ? after : '';
+      after = input.content ?? '';
+    } else if (after !== null && input.old_string && after.includes(input.new_string ?? '')) {
+      before = after.replace(input.new_string, input.old_string);
+    } else {
+      before = input.old_string ?? '';
+      after = input.new_string ?? after ?? '';
+      toast(`${label} isn't on this machine — showing the edit without context`);
+    }
+
+    const key = `diff:${ev.tool_use_id || path}`;
+    openTab({
+      key,
+      label: `${label} (diff)`,
+      title: path,
+      view: 'diff',
+      payload: { path, before, after, key },
     });
   }
 
-  /** Push settings that other modules own into those modules. */
-  function applySettings(cfg) {
-    window.Editor.setFontSize?.(cfg.fontSize);
-    window.Term.setFontSize?.(cfg.fontSize);
-    if (S.activeView === 'files') showFiles();
-  }
+  // ======================================================================
+  // activity bar, panel, views
+  // ======================================================================
 
-  async function showLibrary(query = '') {
-    openPanelTab('library', 'Capability library', async (host) => {
-      host.innerHTML = '<div class="inspector"><p class="muted">Indexing…</p></div>';
-      try {
-        const data = await api(`/api/library?q=${encodeURIComponent(query)}&limit=25`);
-        window.Panels.renderLibrary(host, data, {
-          copySkill: async (entry, target) => {
-            const body =
-              target === 'user'
-                ? { source_path: entry.path, scope: 'user' }
-                : { source_path: entry.path, scope: 'repo', repo: target };
-            try {
-              return await post('/api/skills/copy', body);
-            } catch (err) {
-              if (!/already exists/.test(err.message)) throw err;
-              if (!confirm(`${entry.name} already exists there. Replace it?`)) throw err;
-              return post('/api/skills/copy', { ...body, overwrite: true });
-            }
-          },
-          search: (q) => {
-            query = q;
-            const tab = S.tabs.find((t) => t.key === 'library');
-            if (tab) tab.render(host);
-          },
-        });
-      } catch (err) {
-        host.innerHTML = `<div class="inspector"><p class="muted">${err.message}</p></div>`;
-      }
-    });
-  }
+  const ACTIVITIES = [
+    { id: 'files', icon: 'files', title: `Explorer (${MOD}+Shift+E)`, onSelect: showFiles },
+    { id: 'search', icon: 'search', title: `Search (${MOD}+Shift+F)`, onSelect: showSearch },
+    { id: 'scm', icon: 'scm', title: `Source Control (${MOD}+Shift+G)`, onSelect: showScm },
+    { id: 'terminal', icon: 'terminal', title: `Terminal (${MOD}+\`)`, onSelect: () => togglePanel() },
+    { id: 'settings', icon: 'settings', title: 'Settings', onSelect: showSettings },
+  ];
 
-  function showSessions() {
-    $('sidebar-title').textContent = 'Sessions';
-    renderSidebar();
+  function showView(id) {
+    const activity = ACTIVITIES.find((a) => a.id === id);
+    if (!activity) return;
+    S.activeView = id;
+    renderActivityBar();
+    activity.onSelect();
   }
 
   function renderActivityBar() {
@@ -1541,16 +1559,19 @@
       btn.className = 'activity-btn' + (S.activeView === a.id ? ' active' : '');
       btn.title = a.title;
       btn.innerHTML = window.Icons[a.icon];
-      if (a.id === 'sessions' && S.live.some((r) => r.status === 'needs_input')) {
+      const changes = (S.git?.files || []).length;
+      if (a.id === 'scm' && changes) {
         const b = document.createElement('span');
         b.className = 'badge';
-        b.textContent = String(S.live.filter((r) => r.status === 'needs_input').length);
+        b.textContent = String(changes);
         btn.appendChild(b);
       }
       btn.addEventListener('click', () => {
-        if (a.id !== 'terminal') S.activeView = a.id;
-        renderActivityBar();
-        a.onSelect();
+        if (a.id === 'terminal') {
+          a.onSelect();
+          return;
+        }
+        showView(a.id);
       });
       host.appendChild(btn);
     }
@@ -1560,9 +1581,8 @@
     S.panelOpen = force === undefined ? !S.panelOpen : force;
     $('panel').classList.toggle('hidden', !S.panelOpen);
     if (S.panelOpen) {
-      const cwd = currentRepoPath();
-      $('panel-cwd').textContent = cwd || '';
-      window.Term.open(cwd).then((res) => {
+      $('panel-cwd').textContent = S.folder || '';
+      window.Term.open(S.folder).then((res) => {
         if (res && !res.ok) toast(res.error, true);
       });
       setTimeout(() => window.Term.fitActive(), 30);
@@ -1570,45 +1590,96 @@
     window.Editor.layout();
   }
 
-  // ======================================================================
-  // status bar + polling
-  // ======================================================================
-
-  function refreshStatusbar() {
-    const sessions = S.repos.reduce((n, r) => n + r.sessions.length, 0);
-    $('status-sessions').textContent = `${sessions} session${
-      sessions === 1 ? '' : 's'
-    } · ${S.repos.length} repo${S.repos.length === 1 ? '' : 's'}`;
-    const running = S.live.filter((r) => r.status === 'running').length;
-    const waiting = S.live.filter((r) => r.status === 'needs_input').length;
-    const el = $('status-runs');
-    el.className = 'item' + (waiting ? ' warn' : '');
-    el.textContent = S.live.length
-      ? `${running} running · ${waiting} need you`
-      : 'no live sessions';
+  function showSettings() {
+    openTab({
+      key: 'settings',
+      label: 'Settings',
+      view: 'panel',
+      render: (host) =>
+        window.Settings.render(host, {
+          config: S.config || {},
+          folder: S.folder,
+          onResetLayout: () => {
+            window.Resize.reset();
+            toast('pane sizes reset');
+          },
+          onClearChats: async () => {
+            const open = [...CHATS.keys()];
+            if (!open.length) {
+              toast('no chats open');
+              return;
+            }
+            if (!confirm(`Close ${open.length} conversation${open.length === 1 ? '' : 's'}?`)) return;
+            for (const cwd of open) {
+              const handle = CHATS.get(cwd);
+              handle.dispose();
+              CHATS.delete(cwd);
+              post(`/api/chats/${handle.meta.chat_id}/close`, {}).catch(() => {});
+            }
+            S.chatCwd = null;
+            $('agent-log').innerHTML = '';
+            toast(`closed ${open.length}`);
+          },
+        }),
+    });
   }
 
-  async function refresh() {
-    try {
-      const data = await api('/api/sessions');
-      S.repos = data.repos;
-      S.live = data.live;
-      $('status-backend').textContent = 'backend up';
-      $('status-backend').className = 'item';
-      $('titlebar-source').textContent = data.projects_dir;
-      if (S.activeView === 'sessions') renderSidebar();
-      renderActivityBar();
-      renderTargets();
-      refreshStatusbar();
-    } catch (err) {
-      $('status-backend').textContent = `backend down — ${err.message}`;
-      $('status-backend').className = 'item err';
+  /** Push settings that other modules own into those modules. */
+  function applySettings(cfg) {
+    window.Editor.applySettings?.(cfg);
+    window.Term.setFontSize?.(cfg.fontSize);
+    if (S.activeView === 'files') showFiles();
+  }
+
+  function renderWelcome() {
+    const host = $('view-welcome');
+    host.innerHTML = '';
+    const wrap = el(`
+      <div class="empty-state">
+        <h2>${S.folder ? esc(base(S.folder)) : 'No folder open'}</h2>
+        <p>${
+          S.folder
+            ? 'Pick a file from the explorer, or jump to one with <kbd>' +
+              MOD +
+              '</kbd>+<kbd>P</kbd>.'
+            : 'Open a folder to start editing.'
+        }</p>
+        <p><button class="btn small" data-act="open">Open Folder…</button></p>
+        <div class="recents"></div>
+        <p class="muted">Terminal <kbd>${MOD}</kbd>+<kbd>\`</kbd> ·
+           Search <kbd>${MOD}</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> ·
+           Save <kbd>${MOD}</kbd>+<kbd>S</kbd></p>
+      </div>`);
+    wrap.querySelector('[data-act="open"]').addEventListener('click', pickFolder);
+    const recents = wrap.querySelector('.recents');
+    for (const path of S.recents.slice(0, 6)) {
+      const row = el(
+        `<button class="recent-row" title="${esc(path)}">
+           <span class="ticon">${window.Icons.folder}</span>
+           <span class="recent-name">${esc(base(path))}</span>
+           <span class="recent-path">${esc(path)}</span>
+         </button>`
+      );
+      row.addEventListener('click', () => openFolder(path));
+      recents.appendChild(row);
     }
+    host.appendChild(wrap);
   }
 
   // ======================================================================
   // boot
   // ======================================================================
+
+  async function health() {
+    try {
+      await api('/api/health');
+      $('status-backend').textContent = 'backend up';
+      $('status-backend').className = 'item';
+    } catch (err) {
+      $('status-backend').textContent = `backend down — ${err.message}`;
+      $('status-backend').className = 'item err';
+    }
+  }
 
   async function boot() {
     S.config = await window.descant.config();
@@ -1616,24 +1687,72 @@
 
     window.Term.init($('terminal-host'));
     window.Editor.init($('monaco-host'));
-
     applySettings(window.Settings.init(applySettings));
+
+    loadRecents();
+    renderTargets();
     renderActivityBar();
+    renderWelcome();
     window.Resize.init({
       onLayout: () => {
         window.Editor.layout();
         window.Term.fitActive();
       },
     });
-    await refresh();
-    // The panel is a conversation by default; opening a session switches it to
-    // that session's transcript, and "Back to chat" returns.
-    showChat().catch(() => {
-      /* no repo on this machine yet — the composer says so when you type */
+    await health();
+    setInterval(health, 15000);
+
+    let last = null;
+    try {
+      last = localStorage.getItem(LAST_KEY);
+    } catch {
+      /* storage disabled */
+    }
+    if (last || S.config.openDir) await openFolder(last || S.config.openDir);
+    else showView('files');
+
+    // Git state goes stale when something outside the app touches the repo —
+    // the terminal two inches down, or an agent in the panel.
+    setInterval(() => {
+      if (S.folder && !document.hidden) refreshGit();
+    }, 5000);
+
+    $('btn-refresh').addEventListener('click', async () => {
+      if (!S.folder) return pickFolder();
+      await post('/api/search/reindex', { root: S.folder }).catch(() => {});
+      await refreshGit();
+      showView(S.activeView);
+      toast('reloaded');
+    });
+    $('btn-run-file').innerHTML = window.Icons.run;
+    $('btn-run-file').addEventListener('click', runOpenFile);
+    $('btn-new-session').addEventListener('click', pickFolder);
+    $('btn-send').addEventListener('click', sendChat);
+    $('btn-run-terminal').addEventListener('click', runInTerminal);
+    $('btn-stop').addEventListener('click', stopChat);
+    $('btn-panel-close').addEventListener('click', () => togglePanel(false));
+    $('chat-mode').addEventListener('change', async () => {
+      const handle = activeChat();
+      if (handle) await handle.setMode($('chat-mode').value);
+    });
+    $('composer-target').addEventListener('change', (e) => {
+      if (e.target.value === '__open__') {
+        renderTargets();
+        pickFolder();
+        return;
+      }
+      openFolder(e.target.value);
+    });
+    $('composer-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        sendChat();
+      }
+    });
+    $('status-branch').addEventListener('click', (e) => {
+      if (S.git?.is_repo) showBranchMenu(e);
     });
 
-    $('btn-refresh').addEventListener('click', refresh);
-    $('btn-run-file').innerHTML = window.Icons.run;
     const handleMenu = (action) => {
       // A menu accelerator fires no matter what has focus, which is the whole
       // reason it works inside Monaco — but it also means Cmd+Enter would run a
@@ -1642,22 +1761,28 @@
       if (action === 'run-file') {
         if (document.activeElement === $('composer-input')) sendChat();
         else runOpenFile();
-      }
-      else if (action === 'save-file') saveOpenFile();
-      else if (action === 'new-session') newSession();
+      } else if (action === 'save-file') saveOpenFile();
+      else if (action === 'open-folder') pickFolder();
+      else if (action === 'new-file') S.folder && createEntry(S.folder, false);
       else if (action === 'toggle-terminal') togglePanel();
       else if (action === 'close-tab' && S.activeTab) closeTab(S.activeTab);
+      else if (action === 'quick-open') toggleQuickOpen();
+      else if (action === 'view-explorer') showView('files');
+      else if (action === 'view-search') showView('search');
+      else if (action === 'view-scm') showView('scm');
+      else if (action === 'find') window.Editor.find();
     };
     window.descant.onMenu(handleMenu);
+    // Exposed so the headless checks can exercise the same path the menu uses.
+    window.__menuHandler = handleMenu;
 
     // The editor gets its own menu; Monaco's built-in one is replaced so Save
     // and Run are where you expect them.
     window.ContextMenu.attach($('monaco-host'), () => {
       if (!S.openFilePath) return null;
-      const mod = navigator.platform.includes('Mac') ? '⌘' : 'Ctrl';
       return [
-        { label: 'Save', hint: `${mod}+S`, disabled: !window.Editor.isDirty(), action: saveOpenFile },
-        { label: 'Run File', hint: `${mod}+↵`, action: runOpenFile },
+        { label: 'Save', hint: `${MOD}+S`, disabled: !window.Editor.isDirty(), action: saveOpenFile },
+        { label: 'Run File', hint: `${MOD}+↵`, action: runOpenFile },
         { separator: true },
         { label: 'Copy Path', action: () => navigator.clipboard.writeText(S.openFilePath) },
       ];
@@ -1669,48 +1794,16 @@
         label: 'Paste',
         action: async () => {
           const text = await navigator.clipboard.readText();
-          const cwd = S.fileRoot || $('composer-target').value;
-          if (text) window.Term.send(cwd, text.replace(/\n$/, ''));
+          if (text) window.Term.send(S.folder, text.replace(/\n$/, ''));
         },
       },
-      { label: 'Clear', action: () => window.Term.send(S.fileRoot || $('composer-target').value, 'clear') },
+      { label: 'Clear', action: () => window.Term.send(S.folder, 'clear') },
     ]);
-    // Exposed so the headless checks can exercise the same path the menu uses.
-    window.__menuHandler = handleMenu;
-    $('btn-run-file').addEventListener('click', runOpenFile);
-    $('btn-new-session').addEventListener('click', newSession);
-    $('btn-send').addEventListener('click', sendChat);
-    $('btn-run-terminal').addEventListener('click', runInTerminal);
-    $('btn-back-to-chat').addEventListener('click', () => showChat(S.chatCwd));
-    $('chat-mode').addEventListener('change', async () => {
-      const handle = activeChat();
-      if (handle) await handle.setMode($('chat-mode').value);
-    });
-    $('btn-stop').addEventListener('click', stopChat);
-    $('btn-panel-close').addEventListener('click', () => togglePanel(false));
-    $('composer-target').addEventListener('change', () => {
-      updateComposerHint();
-      if (S.panelMode === 'chat') showChat($('composer-target').value);
-      if (S.activeView === 'files') showFiles();
-    });
-
-    $('composer-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        sendChat();
-      }
-    });
-
-    window.addEventListener('keydown', (e) => {
-      // Cmd+Enter, Cmd+S, Cmd+` and Cmd+W are menu accelerators now (see
-      // buildMenu in main.js); binding them here too would fire them twice.
-    });
 
     window.descant.onBackendExternal((url) => {
       $('status-backend').textContent = `backend up (external ${url})`;
       $('status-backend').className = 'item';
     });
-
     window.descant.onBackendDown((log) => {
       $('status-backend').textContent = 'backend exited';
       $('status-backend').className = 'item err';
@@ -1721,9 +1814,6 @@
       console.warn('terminal unavailable:', window.Term.loadError());
     }
   }
-
-  // Exposed for headless verification (DESCANT_DRIVE); harmless in normal use.
-  window.followRepoForTest = followRepo;
 
   window.addEventListener('DOMContentLoaded', () =>
     boot().catch((err) => {

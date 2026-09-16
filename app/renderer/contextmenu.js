@@ -41,8 +41,15 @@ window.ContextMenu = (() => {
       const row = document.createElement('button');
       row.className = 'ctx-item' + (item.danger ? ' danger' : '');
       row.disabled = Boolean(item.disabled);
-      row.innerHTML = `<span>${item.label}</span>${
-        item.hint ? `<span class="ctx-hint">${item.hint}</span>` : ''
+      // Labels can carry repo-controlled text (a branch name, a filename), so
+      // they are escaped rather than trusted into innerHTML.
+      const esc = (s) =>
+        String(s == null ? '' : s).replace(
+          /[&<>"']/g,
+          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+        );
+      row.innerHTML = `<span>${esc(item.label)}</span>${
+        item.hint ? `<span class="ctx-hint">${esc(item.hint)}</span>` : ''
       }`;
       row.addEventListener('click', () => {
         close();

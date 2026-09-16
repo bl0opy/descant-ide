@@ -2255,3 +2255,382 @@ body.resizing .xterm {
   border-left: 2px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
+
+/* ==========================================================================
+   Search panel
+   ========================================================================== */
+
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.search-input {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.search-input.small {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+
+.search-opts {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.search-opts .opt {
+  min-width: 28px;
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.search-opts .opt:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.search-opts .opt.on {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.search-summary {
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.sr-group .sr-rows {
+  display: none;
+}
+
+.sr-group.open .sr-rows {
+  display: block;
+}
+
+.sr-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--row-height);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sr-head:hover {
+  background: var(--bg-hover);
+}
+
+.sr-head .chevron svg,
+.sr-head .ticon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.sr-head .chevron {
+  color: var(--fg-faint);
+}
+
+.sr-path {
+  color: var(--fg);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.sr-dir {
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the tail of a long path, which is the useful half */
+  text-align: left;
+}
+
+.sr-head .count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 var(--space-2);
+  background: var(--bg-raised);
+  border-radius: var(--radius-pill);
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+.sr-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-6);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.sr-row:hover {
+  background: var(--bg-hover);
+}
+
+.sr-line {
+  flex: 0 0 auto;
+  min-width: 28px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: right;
+}
+
+.sr-text {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sr-text mark {
+  background: var(--accent-dim);
+  border-radius: 2px;
+  color: var(--accent);
+}
+
+/* ==========================================================================
+   Source control
+   ========================================================================== */
+
+.scm-toolbar .tree-root {
+  font-family: var(--font-mono);
+}
+
+.commit-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.commit-box textarea {
+  width: 100%;
+  padding: var(--space-3);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  resize: vertical;
+}
+
+.commit-box textarea:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.commit-row {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+.change-row .change-dir {
+  flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+
+/* One letter, coloured by what happened to the file — the VS Code convention. */
+.change-flag {
+  flex: 0 0 auto;
+  width: 14px;
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+.change-flag.modified { color: var(--warning); }
+.change-flag.added { color: var(--success); }
+.change-flag.untracked { color: var(--success); }
+.change-flag.deleted { color: var(--danger); }
+.change-flag.conflict { color: var(--danger); }
+.change-flag.renamed { color: var(--accent); }
+
+#statusbar .item.clickable {
+  cursor: pointer;
+}
+
+#statusbar .item.clickable:hover {
+  background: var(--bg-hover);
+}
+
+/* ==========================================================================
+   Quick open  (Cmd+P)
+   ========================================================================== */
+
+#quickopen {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 12vh;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+#qo-input {
+  width: min(620px, 80vw);
+  padding: var(--space-5) var(--space-6);
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  box-shadow: var(--shadow-popover);
+  color: var(--fg-strong);
+  font-family: var(--font-ui);
+  font-size: var(--text-lg);
+}
+
+#qo-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#qo-list {
+  width: min(620px, 80vw);
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border-strong);
+  border-top: none;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  box-shadow: var(--shadow-popover);
+}
+
+.qo-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-3) var(--space-5);
+  cursor: pointer;
+}
+
+.qo-row .ticon svg {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+
+.qo-row:hover,
+.qo-row.active {
+  background: var(--bg-selected);
+}
+
+.qo-name {
+  color: var(--fg-strong);
+  font-size: var(--text-md);
+}
+
+.qo-dir {
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.qo-empty {
+  padding: var(--space-5) var(--space-6);
+  color: var(--fg-faint);
+  font-size: var(--text-sm);
+}
+
+/* ==========================================================================
+   Welcome screen recents
+   ========================================================================== */
+
+.recents {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-5) 0;
+}
+
+.recent-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  max-width: 520px;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.recent-row:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.recent-row .ticon {
+  display: flex;
+  color: var(--fg-faint);
+}
+
+.recent-row .ticon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.recent-name {
+  flex: 0 0 auto;
+  color: var(--fg-strong);
+}
+
+.recent-path {
+  flex: 1;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}

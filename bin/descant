@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Launch the Descant IDE.
 #
-#   descant              fixtures (six demo sessions across three repos)
-#   descant --real       your real history in ~/.claude/projects
-#   descant <dir>        any projects directory
+#   descant              the folder you had open last
+#   descant <dir>        open that folder
+#   descant .            open the current directory
 #
 # Anything after `--` is passed through to electron.
 set -euo pipefail
@@ -23,14 +23,10 @@ case "${1-}" in
     sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
-  --real)
-    export DESCANT_PROJECTS_DIR="$HOME/.claude/projects"
-    shift
-    ;;
   --)
     ;;
   ?*)
-    export DESCANT_PROJECTS_DIR="$(cd "$1" && pwd)"
+    export DESCANT_OPEN_DIR="$(cd "$1" && pwd)"
     shift
     ;;
 esac

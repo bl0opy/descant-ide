@@ -9,7 +9,35 @@ window.Editor = (() => {
   let diffEditor = null;
   let host = null;
   let currentPath = null;
-  let fontSize = 12;
+
+  //: Editor options the settings screen owns. Kept in one object so a new
+  //: setting reaches a live editor, a new editor and the diff view by one path.
+  let options = {
+    fontSize: 12,
+    tabSize: 4,
+    wordWrap: 'off',
+    minimap: true,
+    lineNumbers: 'on',
+    renderWhitespace: 'selection',
+    bracketPairs: true,
+    cursorBlinking: 'blink',
+  };
+
+  function monacoOptions() {
+    return {
+      fontSize: options.fontSize,
+      tabSize: options.tabSize,
+      wordWrap: options.wordWrap,
+      minimap: { enabled: options.minimap },
+      lineNumbers: options.lineNumbers,
+      renderWhitespace: options.renderWhitespace,
+      cursorBlinking: options.cursorBlinking,
+      guides: { bracketPairs: options.bracketPairs, indentation: true },
+      fontFamily: getComputedStyle(document.documentElement)
+        .getPropertyValue('--font-mono')
+        .trim(),
+    };
+  }
 
   function load() {
     if (monaco) return Promise.resolve(monaco);
@@ -207,13 +235,9 @@ window.Editor = (() => {
         theme: 'descant',
         readOnly,
         automaticLayout: true,
-        minimap: { enabled: true },
-        fontSize,
-        fontFamily: getComputedStyle(document.documentElement)
-          .getPropertyValue('--font-mono')
-          .trim(),
         scrollBeyondLastLine: false,
-        renderWhitespace: 'selection',
+        smoothScrolling: true,
+        ...monacoOptions(),
       });
     } else {
       editor.setModel(entry.model);
@@ -274,22 +298,20 @@ window.Editor = (() => {
   }
 
   /** Side-by-side diff — used to show what an agent edit changed. */
-  async function openDiff(path, before, after) {
+  async function openDiff(path, before, after, key = null) {
     await load();
     stashViewState();
     disposeEditors();
-    // Namespaced so a file tab and a diff tab for the same path are distinct.
-    currentPath = `diff:${path}`;
+    // Namespaced so a file tab and a diff tab for the same path are distinct,
+    // and so two diffs of the same file (staged vs working) do not collide.
+    currentPath = `diff:${key || path}`;
     const lang = langFor(path);
     diffEditor = monaco.editor.createDiffEditor(host, {
       theme: 'descant',
       automaticLayout: true,
       readOnly: true,
       renderSideBySide: true,
-      fontSize,
-      fontFamily: getComputedStyle(document.documentElement)
-        .getPropertyValue('--font-mono')
-        .trim(),
+      ...monacoOptions(),
     });
     diffEditor.setModel({
       original: monaco.editor.createModel(before, lang),
@@ -298,11 +320,39 @@ window.Editor = (() => {
     return diffEditor;
   }
 
-  /** Font size is a setting, so it has to reach a live editor too. */
-  function setFontSize(px) {
-    fontSize = px || fontSize;
-    editor?.updateOptions({ fontSize });
-    diffEditor?.updateOptions({ fontSize });
+  /** Settings have to reach a live editor, not just the next one created. */
+  function applySettings(cfg) {
+    options = {
+      ...options,
+      fontSize: cfg.fontSize ?? options.fontSize,
+      tabSize: cfg.tabSize ?? options.tabSize,
+      wordWrap: cfg.wordWrap ? 'on' : 'off',
+      minimap: cfg.minimap ?? options.minimap,
+      lineNumbers: cfg.lineNumbers === false ? 'off' : 'on',
+      renderWhitespace: cfg.renderWhitespace || options.renderWhitespace,
+      bracketPairs: cfg.bracketPairs ?? options.bracketPairs,
+    };
+    editor?.updateOptions(monacoOptions());
+    diffEditor?.updateOptions(monacoOptions());
+  }
+
+  /** Scroll to a line and put the cursor on it — search results land here. */
+  function reveal(line, column = 1) {
+    if (!editor || !line) return;
+    editor.revealLineInCenter(line);
+    editor.setPosition({ lineNumber: line, column });
+    editor.focus();
+  }
+
+  /** Monaco's own find widget, opened from our menu rather than its keybinding. */
+  function find() {
+    editor?.getAction('actions.find')?.run();
+  }
+
+  /** Where the cursor is, for the status bar. */
+  function cursor() {
+    const pos = editor?.getPosition();
+    return pos ? { line: pos.lineNumber, column: pos.column } : null;
   }
 
   function layout() {
@@ -316,7 +366,10 @@ window.Editor = (() => {
     openFile,
     openDiff,
     layout,
-    setFontSize,
+    applySettings,
+    reveal,
+    find,
+    cursor,
     langFor,
     languageCount,
     current: () => currentPath,

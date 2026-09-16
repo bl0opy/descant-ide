@@ -9,7 +9,7 @@
 // Everything else — transcript parsing, context analysis, spawning `claude` —
 // lives in Python and is reached over HTTP/WebSocket.
 
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const http = require('node:http');
@@ -22,14 +22,9 @@ const HOST = process.env.DESCANT_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.DESCANT_PORT || '8787', 10);
 const API = `http://${HOST}:${PORT}`;
 
-// Read the bundled fixtures *and* the real history, so a fresh clone shows
-// something on first launch while live sessions — which run in the terminal and
-// write to the real location — still show up. Set DESCANT_PROJECTS_DIR to
-// override; it accepts a path.delimiter-separated list.
-const REAL_PROJECTS_DIR = path.join(require('node:os').homedir(), '.claude', 'projects');
-const PROJECTS_DIR =
-  process.env.DESCANT_PROJECTS_DIR ||
-  [path.join(ROOT, 'fixtures', 'projects'), REAL_PROJECTS_DIR].join(path.delimiter);
+// The folder to open on first launch, when the renderer has no remembered one.
+// `descant <dir>` sets it; otherwise the renderer falls back to its last folder.
+const OPEN_DIR = process.env.DESCANT_OPEN_DIR || '';
 
 let backend = null;
 let win = null;
@@ -56,7 +51,6 @@ function startBackend() {
     cwd: BACKEND_DIR,
     env: {
       ...process.env,
-      DESCANT_PROJECTS_DIR: PROJECTS_DIR,
       DESCANT_HOST: HOST,
       // Let the backend follow us down if we die without a clean shutdown;
       // chats own live `claude` processes that nothing else would stop.
@@ -209,14 +203,26 @@ function buildMenu() {
     {
       label: 'File',
       submenu: [
-        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save-file') },
+        { label: 'New File', accelerator: 'CmdOrCtrl+N', click: send('new-file') },
+        { label: 'Open Folder…', accelerator: 'CmdOrCtrl+O', click: send('open-folder') },
         { type: 'separator' },
-        { label: 'New Session', accelerator: 'CmdOrCtrl+N', click: send('new-session') },
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save-file') },
         { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
         ...(isMac ? [] : [{ type: 'separator' }, { role: 'quit' }]),
       ],
     },
     { role: 'editMenu' },
+    {
+      label: 'Go',
+      submenu: [
+        { label: 'Go to File…', accelerator: 'CmdOrCtrl+P', click: send('quick-open') },
+        { label: 'Find in File', accelerator: 'CmdOrCtrl+F', click: send('find') },
+        { type: 'separator' },
+        { label: 'Explorer', accelerator: 'CmdOrCtrl+Shift+E', click: send('view-explorer') },
+        { label: 'Search', accelerator: 'CmdOrCtrl+Shift+F', click: send('view-search') },
+        { label: 'Source Control', accelerator: 'CmdOrCtrl+Shift+G', click: send('view-scm') },
+      ],
+    },
     {
       label: 'Run',
       submenu: [
@@ -338,12 +344,20 @@ ipcMain.on('pty:kill', (event, { id }) => {
 
 ipcMain.handle('descant:config', () => ({
   api: API,
-  projectsDir: PROJECTS_DIR,
+  openDir: OPEN_DIR,
   ptyAvailable: Boolean(pty),
   ptyError: ptyLoadError,
-  sandboxRepo: path.join(ROOT, 'sandbox-repo'),
   root: ROOT,
 }));
+
+// The one thing the renderer genuinely cannot do: a native folder picker.
+ipcMain.handle('descant:openFolder', async () => {
+  const res = await dialog.showOpenDialog(win, {
+    title: 'Open Folder',
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return res.canceled ? null : res.filePaths[0];
+});
 
 ipcMain.handle('descant:backendLog', () => backendLog.slice(-60));
 
