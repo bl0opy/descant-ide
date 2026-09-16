@@ -22,6 +22,7 @@
     activeView: 'files',
     panelOpen: false,
     chatCwd: null,      // which folder's chat the panel is showing
+    chatOptions: null,  // modes + models, fetched once from the backend
     openFilePath: null, // file showing in the editor, for the Run arrow
     truncatedFiles: new Set(), // loaded partially — never safe to save back
   };
@@ -130,6 +131,12 @@
     // redrawn when the folder changes — not only when a tab closes onto it.
     if (!S.activeTab) renderWelcome();
     if (S.panelOpen) window.Term.open(path);
+    // Attach the conversation for this folder now. A chat costs nothing until
+    // its first turn — no `claude` process is spawned — so the panel may as
+    // well be live and showing the right folder from the moment you open one.
+    showChat(path).catch(() => {
+      /* the composer says what went wrong when you try to use it */
+    });
   }
 
   async function pickFolder() {
@@ -149,9 +156,13 @@
   }
 
   function updateComposerHint() {
-    $('composer-hint').textContent = S.folder
-      ? `Send chats · Run shells · ${base(S.folder)}`
-      : 'Open a folder to get started';
+    // The chips already say which folder, mode and model, and the button row
+    // has no space left. What is worth saying is how to send — Enter-sends is a
+    // choice, not a convention — so it goes in the field itself, where it is
+    // visible exactly while there is nothing to lose by reading it.
+    $('composer-input').placeholder = S.folder
+      ? 'Ask Claude  ·  ⏎ send, ⇧⏎ newline'
+      : 'Open a folder to start a conversation';
   }
 
   // ======================================================================
@@ -1396,6 +1407,7 @@
     const chat = await post('/api/chats', {
       repo: cwd,
       permission_mode: window.Settings.get().permissionMode,
+      model: window.Settings.get().model || '',
     });
     const handle = window.Chat.attach({
       chat,
@@ -1403,6 +1415,7 @@
       api,
       wsUrl: (id) => `${S.api.replace(/^http/, 'ws')}/ws/chats/${id}`,
       onDiff: openAgentDiff,
+      onOpenFile: (path) => openFile(path, base(path)),
       onMeta: (m) => {
         if (S.chatCwd === m.cwd) paintChatHeader(m);
       },
@@ -1411,16 +1424,132 @@
     return handle;
   }
 
+  /**
+   * Repaint the panel's chrome from one chat's metadata.
+   *
+   * Everything the header and the chips say comes from the backend's view of
+   * the conversation, never from what the UI last set — a mode change that
+   * failed has to look like it failed.
+   */
   function paintChatHeader(m) {
-    $('agent-title').textContent = m.repo_name || base(m.cwd);
-    $('agent-meta').textContent = window.Chat.STATUS_LABEL[m.status] || m.status;
-    $('agent-dot').className = `dot ${
-      ['running', 'needs_input', 'failed'].includes(m.status) ? m.status : 'idle'
+    const status = ['running', 'needs_input', 'failed'].includes(m.status) ? m.status : 'idle';
+    $('agent-dot').className = `dot ${status}`;
+    $('agent-title').textContent = `${m.repo_name || base(m.cwd)} · ${
+      window.Chat.STATUS_LABEL[m.status] || m.status
     }`;
-    $('chat-mode').value = m.permission_mode;
+    $('agent-title').title = [
+      `session ${m.session_id}`,
+      `${m.turns} turn${m.turns === 1 ? '' : 's'}`,
+      m.cost_usd ? `$${m.cost_usd.toFixed(4)}` : 'no cost reported yet',
+      m.error || '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    $('chip-mode').textContent = window.Chat.MODE_LABEL[m.permission_mode] || m.permission_mode;
+    $('chip-mode').title = m.mode_help || 'Permission mode';
+    $('chip-mode').classList.toggle('warn', m.permission_mode === 'dontAsk');
+    $('chip-model').textContent = m.model || 'default';
+    $('chip-model').title = m.model ? `--model ${m.model}` : 'whatever your Claude Code config says';
+
     const busy = m.status === 'running' || m.status === 'starting';
     $('btn-send').disabled = busy;
     $('btn-stop').style.display = busy ? '' : 'none';
+    // A pending decision is the one thing that should pull your eye.
+    $('agent-panel').classList.toggle('needs-you', m.status === 'needs_input');
+  }
+
+  /** Before a conversation exists, the chips show what the next one will use. */
+  function paintIdleChips() {
+    if (activeChat()) return;
+    const cfg = window.Settings.get();
+    $('chip-mode').textContent = window.Chat.MODE_LABEL[cfg.permissionMode] || cfg.permissionMode;
+    $('chip-model').textContent = cfg.model || 'default';
+  }
+
+  /** Modes and models, from the backend so the menu can't offer a bad one. */
+  async function chatOptions() {
+    if (!S.chatOptions) S.chatOptions = await api('/api/chats/options');
+    return S.chatOptions;
+  }
+
+  /** Below the control that opened it — a click with no pointer (keyboard,
+   *  a test) still has to put the menu somewhere sensible. */
+  function anchorOf(e) {
+    const rect = (e.currentTarget || e.target).getBoundingClientRect();
+    return [rect.left, rect.bottom + 4];
+  }
+
+  async function showModeMenu(e) {
+    const [x, y] = anchorOf(e);
+    const handle = activeChat();
+    const { modes } = await chatOptions();
+    const currentMode = handle?.meta.permission_mode || window.Settings.get().permissionMode;
+    window.ContextMenu.show(
+      x,
+      y,
+      modes.map((m) => ({
+        label: (m.id === currentMode ? '● ' : '\u3000') + (window.Chat.MODE_LABEL[m.id] || m.id),
+        hint: m.help,
+        action: async () => {
+          // Remember it as the default too: picking a mode here almost always
+          // means "this is how I want to work", not "just this once".
+          window.Settings.set({ permissionMode: m.id });
+          if (handle) {
+            try {
+              await handle.setMode(m.id);
+            } catch (err) {
+              toast(err.message, true);
+            }
+          }
+        },
+      }))
+    );
+  }
+
+  async function showModelMenu(e) {
+    const [x, y] = anchorOf(e);
+    const handle = activeChat();
+    const { models } = await chatOptions();
+    const currentModel = handle?.meta.model || window.Settings.get().model || '';
+    window.ContextMenu.show(
+      x,
+      y,
+      models.map((id) => ({
+        label: (id === currentModel ? '● ' : '\u3000') + (id || 'default'),
+        hint: id ? '' : 'your Claude Code config decides',
+        action: async () => {
+          window.Settings.set({ model: id });
+          if (handle) {
+            try {
+              await handle.setModel(id);
+            } catch (err) {
+              toast(err.message, true);
+            }
+          }
+        },
+      }))
+    );
+  }
+
+  /** Drop this folder's conversation and start a fresh one. */
+  async function newChat() {
+    if (!S.folder) {
+      toast('open a folder first', true);
+      return;
+    }
+    const old = CHATS.get(S.folder);
+    if (old) {
+      if (!confirm('Start a new conversation?\n\nThe current one is closed and its context is lost.'))
+        return;
+      old.dispose();
+      CHATS.delete(S.folder);
+      post(`/api/chats/${old.meta.chat_id}/close`, {}).catch(() => {});
+    }
+    $('agent-log').innerHTML = '';
+    S.chatCwd = null;
+    await showChat(S.folder);
+    toast('new conversation');
   }
 
   async function showChat(cwd) {
@@ -1628,6 +1757,7 @@
   function applySettings(cfg) {
     window.Editor.applySettings?.(cfg);
     window.Term.setFontSize?.(cfg.fontSize);
+    paintIdleChips();
     if (S.activeView === 'files') showFiles();
   }
 
@@ -1691,6 +1821,7 @@
 
     loadRecents();
     renderTargets();
+    paintIdleChips();
     renderActivityBar();
     renderWelcome();
     window.Resize.init({
@@ -1731,10 +1862,10 @@
     $('btn-run-terminal').addEventListener('click', runInTerminal);
     $('btn-stop').addEventListener('click', stopChat);
     $('btn-panel-close').addEventListener('click', () => togglePanel(false));
-    $('chat-mode').addEventListener('change', async () => {
-      const handle = activeChat();
-      if (handle) await handle.setMode($('chat-mode').value);
-    });
+    $('chip-mode').addEventListener('click', showModeMenu);
+    $('chip-model').addEventListener('click', showModelMenu);
+    $('btn-chat-new').addEventListener('click', newChat);
+    $('btn-chat-settings').addEventListener('click', showSettings);
     $('composer-target').addEventListener('change', (e) => {
       if (e.target.value === '__open__') {
         renderTargets();
@@ -1743,11 +1874,32 @@
       }
       openFolder(e.target.value);
     });
-    $('composer-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    // Enter sends, Shift+Enter is a newline — the terminal convention, not the
+    // chat-app one. Cmd+Enter keeps working because the menu accelerator routes
+    // it here when the composer has focus.
+    const composer = $('composer-input');
+    composer.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendChat();
+        return;
       }
+      if (e.key === 'Escape') {
+        composer.blur();
+      }
+    });
+    // Grow with the text, up to a point; a composer that swallows the log is
+    // worse than one you have to scroll.
+    const autoGrow = () => {
+      composer.style.height = 'auto';
+      composer.style.height = `${Math.min(composer.scrollHeight, 220)}px`;
+    };
+    composer.addEventListener('input', autoGrow);
+
+    // A pending permission answers to a/A/d, as long as you are not typing.
+    $('agent-panel').addEventListener('keydown', (e) => {
+      if (e.target === composer || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (activeChat()?.key(e.key)) e.preventDefault();
     });
     $('status-branch').addEventListener('click', (e) => {
       if (S.git?.is_repo) showBranchMenu(e);
@@ -1773,8 +1925,9 @@
       else if (action === 'find') window.Editor.find();
     };
     window.descant.onMenu(handleMenu);
-    // Exposed so the headless checks can exercise the same path the menu uses.
+    // Exposed so the headless checks can exercise the same paths the UI uses.
     window.__menuHandler = handleMenu;
+    window.__chatForTest = activeChat;
 
     // The editor gets its own menu; Monaco's built-in one is replaced so Save
     // and Run are where you expect them.

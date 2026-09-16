@@ -603,17 +603,34 @@ class NewChatBody(BaseModel):
     repo: str
     permission_mode: str = "manual"
     resume_session: str | None = None
+    model: str = ""
 
 
 @app.post("/api/chats")
 async def new_chat(body: NewChatBody) -> dict:
     try:
         c = await chat.REGISTRY.create(
-            body.repo, permission_mode=body.permission_mode, resume_session=body.resume_session
+            body.repo,
+            permission_mode=body.permission_mode,
+            resume_session=body.resume_session,
+            model=body.model,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return c.meta()
+
+
+@app.get("/api/chats/options")
+def chat_options() -> dict:
+    """Every mode and model the panel may offer, from one source.
+
+    The panel builds its menus from this rather than hardcoding a list, so a
+    mode the backend does not accept can never appear as a choice.
+    """
+    return {
+        "modes": [{"id": m, "help": chat.MODE_HELP.get(m, "")} for m in chat.PERMISSION_MODES],
+        "models": list(chat.MODELS),
+    }
 
 
 @app.get("/api/chats")
@@ -671,6 +688,19 @@ async def chat_mode(chat_id: str, body: ModeBody) -> dict:
     c = _chat_or_404(chat_id)
     try:
         return await c.set_permission_mode(body.permission_mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class ChatModelBody(BaseModel):
+    model: str
+
+
+@app.post("/api/chats/{chat_id}/model")
+async def chat_set_model(chat_id: str, body: ChatModelBody) -> dict:
+    c = _chat_or_404(chat_id)
+    try:
+        return await c.set_model(body.model)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

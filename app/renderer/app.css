@@ -682,204 +682,6 @@ textarea:focus {
   user-select: text;
 }
 
-.ev {
-  padding: var(--space-2) var(--space-5);
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
-  word-break: break-word;
-}
-
-.ev .who {
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-faint);
-  margin-bottom: var(--space-1);
-}
-
-.ev-user_text {
-  border-left: 2px solid var(--accent);
-  background: var(--bg-raised);
-  margin: var(--space-3) var(--space-4);
-  padding: var(--space-4) var(--space-5);
-  border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-}
-
-.ev-assistant_text {
-  color: var(--fg);
-  white-space: pre-wrap;
-}
-
-.ev-thinking {
-  color: var(--fg-faint);
-  font-style: italic;
-  white-space: pre-wrap;
-}
-
-.ev-system {
-  color: var(--fg-faint);
-  font-size: var(--text-xs);
-}
-
-.ev-error {
-  color: var(--danger);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  white-space: pre-wrap;
-}
-
-.ev-status {
-  color: var(--fg-faint);
-  font-size: var(--text-xs);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.ev-status .rule {
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-
-/* --- tool calls --------------------------------------------------------- */
-
-.tool {
-  margin: var(--space-2) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  background: var(--bg-raised);
-}
-
-.tool-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  cursor: pointer;
-  font-size: var(--text-xs);
-}
-
-.tool-head:hover {
-  background: var(--bg-hover);
-}
-
-.tool-head .name {
-  font-family: var(--font-mono);
-  color: var(--fg-strong);
-  font-weight: var(--weight-medium);
-}
-
-.tool-head .arg {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-faint);
-  font-family: var(--font-mono);
-}
-
-.tool-head .tool-diff {
-  flex: 0 0 auto;
-  font-size: var(--text-xs);
-  color: var(--accent);
-  padding: 0 var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-}
-
-.tool-head .tool-diff:hover {
-  background: var(--bg-hover);
-  color: var(--accent-hover);
-}
-
-.tool-head .chevron {
-  width: var(--space-5);
-  height: var(--space-5);
-  color: var(--fg-faint);
-  transition: transform var(--transition-fast);
-}
-
-.tool.open .chevron {
-  transform: rotate(90deg);
-}
-
-.tool-body {
-  display: none;
-  border-top: 1px solid var(--border);
-  background: var(--bg-code);
-  padding: var(--space-4);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: var(--leading-tight);
-  white-space: pre-wrap;
-  max-height: calc(var(--panel-height) * 1.5);
-  overflow: auto;
-  color: var(--fg-muted);
-}
-
-.tool.open .tool-body {
-  display: block;
-}
-
-.tool.errored {
-  border-color: var(--danger);
-}
-
-.tool.errored .name {
-  color: var(--danger);
-}
-
-/* --- permission callout -------------------------------------------------- */
-
-.permission {
-  margin: var(--space-4);
-  border: 1px solid var(--warning);
-  border-left-width: 3px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  padding: var(--space-4) var(--space-5);
-}
-
-.permission .ptitle {
-  color: var(--warning);
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-weight: var(--weight-bold);
-  margin-bottom: var(--space-2);
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.permission .pbody {
-  font-size: var(--text-sm);
-  color: var(--fg);
-  white-space: pre-wrap;
-}
-
-.permission .pcmd {
-  margin-top: var(--space-3);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  background: var(--bg-code);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3);
-  color: var(--fg-muted);
-  white-space: pre-wrap;
-  user-select: text;
-}
-
-.permission .phint {
-  margin-top: var(--space-3);
-  font-size: var(--text-xs);
-  color: var(--fg-faint);
-}
-
 /* --- composer ------------------------------------------------------------ */
 
 .composer {
@@ -891,10 +693,20 @@ textarea:focus {
 }
 
 .composer textarea {
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
   resize: none;
-  min-height: calc(var(--space-8) + var(--space-6));
+  color: var(--fg-strong);
+  font-family: var(--font-mono);
   font-size: var(--text-sm);
-  font-family: var(--font-ui);
+  line-height: var(--leading-normal);
+}
+
+.composer textarea:focus {
+  outline: none;
 }
 
 .composer-row {
@@ -919,10 +731,10 @@ textarea:focus {
 }
 
 .composer-row .hint {
-  flex: 1;
-  font-size: var(--text-xs);
-  color: var(--fg-faint);
+  flex: 0 1 auto;
   overflow: hidden;
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1742,107 +1554,6 @@ textarea:focus {
 }
 
 /* ==========================================================================
-   Chat in the agent panel
-   ========================================================================== */
-
-#agent-panel .agent-header {
-  gap: var(--space-3);
-}
-
-#chat-mode {
-  background: var(--bg-input);
-  color: var(--fg);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 2px var(--space-2);
-  font-size: var(--text-xs);
-  outline: none;
-  max-width: 10rem;
-  flex: 0 0 auto;
-}
-
-.linkish {
-  font-size: var(--text-xs);
-  color: var(--accent);
-  white-space: nowrap;
-}
-
-.linkish:hover {
-  text-decoration: underline;
-}
-
-/* A user turn should read as something you said, not another log line. */
-#agent-log .ev-user_text.chat-mine {
-  align-self: flex-end;
-  margin-left: auto;
-  max-width: 85%;
-  background: var(--bg-input);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  white-space: pre-wrap;
-}
-
-#agent-log .ev-user_text.chat-mine .who {
-  display: none;
-}
-
-/* Permission cards: the thing that makes this a chat and not a viewer. */
-.pactions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-  flex-wrap: wrap;
-}
-
-.prule {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  background: var(--bg-input);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 2px var(--space-2);
-  color: var(--fg);
-}
-
-.pstatus {
-  font-size: var(--text-xs);
-  color: var(--fg-faint);
-}
-
-.pstatus.ok {
-  color: var(--success);
-}
-
-.pstatus.no,
-.pstatus.err {
-  color: var(--danger);
-}
-
-.permission.decided {
-  opacity: 0.62;
-}
-
-/* Delete affordance on a session row: present, but not shouting. */
-.session-row .row-delete {
-  opacity: 0;
-  display: flex;
-  align-items: center;
-  color: var(--fg-faint);
-  padding: 0 2px;
-  flex: 0 0 auto;
-}
-
-.session-row:hover .row-delete {
-  opacity: 1;
-}
-
-.session-row .row-delete:hover {
-  color: var(--danger);
-}
-
-/* ==========================================================================
    File tree
    ========================================================================== */
 
@@ -2633,4 +2344,305 @@ body.resizing .xterm {
   white-space: nowrap;
   direction: rtl;
   text-align: left;
+}
+
+/* ==========================================================================
+   The agent panel, in the shell idiom
+   --------------------------------------------------------------------------
+   Monospace throughout, one line per thing that happened, a gutter column that
+   every row aligns to. No bubbles, no avatars, no per-turn headers: the caret
+   says who spoke and the indent says what kind of thing it was.
+   ========================================================================== */
+
+#agent-panel.needs-you {
+  box-shadow: var(--glass-lift), inset 0 0 0 1px var(--status-needs-input);
+}
+
+.agent-header .hbtn {
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--fg-faint);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.agent-header .hbtn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--fg);
+}
+
+#agent-log {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+/* --- one row of the log -------------------------------------------------- */
+
+.line {
+  padding: var(--space-1) var(--space-6);
+  word-break: break-word;
+}
+
+/* Only rows whose content *is* text get pre-wrap. Putting it on `.line` made
+   the markup's own indentation render as blank space between every row. */
+.line.say,
+.line.err,
+.line.note,
+.line.mine .text {
+  white-space: pre-wrap;
+}
+
+/* The gutter is a fixed column so every row lines up down the left edge. */
+.line .gutter {
+  flex: 0 0 auto;
+  display: inline-block;
+  width: 1.2em;
+  color: var(--fg-faint);
+  user-select: none;
+}
+
+/* Your turn: the one thing in the log that gets an accent. */
+.line.mine {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 var(--space-2);
+  color: var(--fg-strong);
+}
+
+.line.mine .gutter {
+  color: var(--accent);
+}
+
+.line.mine .text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The reply. Plain text, no decoration — it is the thing you are reading. */
+.line.say {
+  padding-bottom: var(--space-3);
+  color: var(--fg);
+}
+
+/* Machine chatter: present, quiet, skippable. */
+.line.note {
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+}
+
+.line.err {
+  color: var(--danger);
+}
+
+/* --- tool calls ---------------------------------------------------------- */
+
+.line.tool {
+  padding: 0;
+}
+
+.line-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: var(--space-1) var(--space-6);
+  cursor: pointer;
+}
+
+.line-head:hover {
+  background: var(--bg-hover);
+}
+
+.tool-name {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.tool-arg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-faint);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.line.tool.done .tool-name {
+  color: var(--success);
+}
+
+.line.tool.errored .tool-name {
+  color: var(--danger);
+}
+
+.line.tool.muted .tool-name,
+.line.tool.muted .tool-arg {
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
+.line-acts {
+  display: none;
+  flex: 0 0 auto;
+  gap: var(--space-2);
+}
+
+.line-head:hover .line-acts {
+  display: flex;
+}
+
+.line-act {
+  padding: 0 var(--space-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.line-act:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.line-act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.line-body {
+  display: none;
+  max-height: 22rem;
+  margin: 0;
+  padding: var(--space-3) var(--space-6) var(--space-3) calc(var(--space-6) + 1.2em);
+  overflow: auto;
+  background: var(--bg-code);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+}
+
+.line.tool.open .line-body {
+  display: block;
+}
+
+/* --- a decision ---------------------------------------------------------- */
+
+.line.perm {
+  margin: var(--space-4) var(--space-5);
+  padding: var(--space-4);
+  background: var(--bg-raised);
+  border: 1px solid var(--status-needs-input);
+  border-radius: var(--radius-sm);
+}
+
+.line.perm.decided {
+  border-color: var(--border);
+  opacity: 0.6;
+}
+
+.perm-head {
+  color: var(--status-needs-input);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.perm-what {
+  margin: var(--space-2) 0;
+  color: var(--fg-strong);
+  word-break: break-all;
+}
+
+.perm-rule {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  background: var(--bg-code);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.perm-acts {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-3);
+}
+
+.perm-acts .line-act b {
+  color: var(--accent);
+  font-weight: var(--weight-bold);
+}
+
+.perm-status {
+  color: var(--fg-faint);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+}
+
+.perm-status.ok { color: var(--success); }
+.perm-status.no { color: var(--fg-muted); }
+.perm-status.err { color: var(--danger); }
+
+/* --- the prompt ---------------------------------------------------------- */
+
+.prompt-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.prompt-row:focus-within {
+  border-color: var(--border-focus);
+}
+
+.prompt-caret {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  user-select: none;
+}
+
+/* Mode and model live next to the prompt, where you decide to use them. */
+.chip {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.chip.warn {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.composer-row select#composer-target {
+  max-width: 9rem;
 }

@@ -55,28 +55,30 @@
         <aside id="agent-panel">
           <div class="agent-header">
             <i class="dot idle" id="agent-dot"></i>
-            <span class="title" id="agent-title">Agent</span>
-            <span class="meta" id="agent-meta"></span>
-            <button class="linkish" id="btn-back-to-chat" style="display: none">
-              Back to chat
-            </button>
-            <select id="chat-mode" title="How tool permissions are handled">
-              <option value="manual">Ask me</option>
-              <option value="acceptEdits">Auto-accept edits</option>
-              <option value="plan">Plan only</option>
-            </select>
+            <span class="title" id="agent-title">Claude</span>
+            <span class="spacer"></span>
+            <button class="hbtn" id="btn-chat-new" title="New conversation">New</button>
+            <button class="hbtn" id="btn-chat-settings" title="Modes and models">Settings</button>
           </div>
+
           <div id="agent-log"></div>
+
           <div class="composer">
-            <textarea
-              id="composer-input"
-              rows="2"
-              placeholder="Message Claude Code…"
-            ></textarea>
+            <div class="prompt-row">
+              <span class="prompt-caret">&rsaquo;</span>
+              <textarea
+                id="composer-input"
+                rows="1"
+                spellcheck="false"
+                placeholder="Ask Claude, or / for a command"
+              ></textarea>
+            </div>
             <div class="composer-row">
-              <select id="composer-target" title="Repo this conversation runs in"></select>
-              <span class="hint" id="composer-hint"></span>
-              <button class="btn secondary" id="btn-run-terminal" title="Open the terminal and run this as a shell command">
+              <button class="chip" id="chip-mode" title="Permission mode">ask me</button>
+              <button class="chip" id="chip-model" title="Model">default</button>
+              <select id="composer-target" title="Folder this conversation runs in"></select>
+              <span class="spacer"></span>
+              <button class="btn secondary" id="btn-run-terminal" title="Run this as a shell command instead">
                 Run
               </button>
               <button class="btn secondary" id="btn-stop" style="display: none">Stop</button>

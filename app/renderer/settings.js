@@ -23,6 +23,7 @@ window.Settings = (() => {
     showHidden: true,         // dotfiles in the explorer
     // chat
     permissionMode: 'manual', // what a new chat starts in
+    model: '',                // '' = whatever your Claude Code config says
   };
 
   let current = { ...DEFAULTS };
@@ -221,6 +222,24 @@ window.Settings = (() => {
         'Default permission mode',
         'What a <em>new</em> conversation starts in. Existing chats keep the mode you set in their header.',
         mode
+      )
+    );
+
+    const model = el(`
+      <select class="set-select">
+        <option value="">Default — whatever your Claude Code config says</option>
+        <option value="fable">fable</option>
+        <option value="opus">opus</option>
+        <option value="sonnet">sonnet</option>
+        <option value="haiku">haiku</option>
+      </select>`);
+    model.value = current.model;
+    model.addEventListener('change', () => set({ model: model.value }));
+    wrap.appendChild(
+      row(
+        'Default model',
+        'What a <em>new</em> conversation starts with. Change a running one from the chip next to the prompt — it restarts and resumes the same session, so nothing is lost.',
+        model
       )
     );
 

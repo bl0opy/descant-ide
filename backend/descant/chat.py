@@ -60,7 +60,22 @@ CLOSED = "closed"
 #: always the complete record.
 MAX_HISTORY = 4000
 
+#: The values `claude --permission-mode` accepts, minus the one that turns
+#: permission checks off entirely. That mode needs a second opt-in flag and is
+#: deliberately not offered here — run it in the terminal panel if you want it,
+#: where it is a thing you typed rather than a dropdown you brushed past.
 PERMISSION_MODES = ("manual", "acceptEdits", "plan", "auto", "dontAsk")
+
+#: Aliases `--model` understands. Empty string means "whatever your config says".
+MODELS = ("", "fable", "opus", "sonnet", "haiku")
+
+MODE_HELP = {
+    "manual": "Ask me — every tool needs a click",
+    "acceptEdits": "Accept edits — file writes go through, everything else asks",
+    "plan": "Plan only — read and think, change nothing",
+    "auto": "Auto — Claude Code decides what is safe",
+    "dontAsk": "Don't ask — no prompts, permissions still enforced",
+}
 
 
 def _permission_rule(tool_name: str, tool_input: dict | None) -> str:
@@ -146,6 +161,8 @@ class Chat:
             "allowed_tools": list(self.allowed_tools),
             "pending": list(self.pending.values()),
             "cost_usd": round(self.cost_usd, 4),
+            "mode_help": MODE_HELP.get(self.permission_mode, ""),
+            "turns": sum(1 for ev in self.history if ev.get("kind") == "user_text"),
             "started_at": self.started_at,
             "error": self.error,
             "alive": bool(self._proc and self._proc.returncode is None),
@@ -164,6 +181,8 @@ class Chat:
             "--permission-mode",
             self.permission_mode,
         ]
+        if self.model:
+            argv += ["--model", self.model]
         # First launch names the session; later launches rejoin it.
         if self._started_once:
             argv += ["--resume", self.session_id]
@@ -396,6 +415,28 @@ class Chat:
         )
         return self.meta()
 
+    async def set_model(self, model: str) -> dict:
+        """Switch models mid-conversation.
+
+        Same mechanism as a permission change: the flag is fixed at launch, so
+        the process is restarted and resumed into the same session. The history
+        comes with it -- you are still talking to the same conversation, with a
+        different model answering the next turn.
+        """
+        model = (model or "").strip()
+        if model not in MODELS:
+            raise ValueError(f"model must be one of {MODELS}")
+        if model == self.model:
+            return self.meta()
+        self.model = model
+        if self._started_once and self._proc and self._proc.returncode is None:
+            await self._stop_process()
+            await self.start()
+        await self._emit(
+            events.make("system", subtype="model", text=f"model: {model or 'default'}")
+        )
+        return self.meta()
+
     # ------------------------------------------------------------- stopping
     async def interrupt(self) -> dict:
         """Stop the current turn without losing the conversation."""
@@ -450,17 +491,20 @@ class ChatRegistry:
         self._chats: dict[str, Chat] = {}
 
     async def create(self, cwd: str, permission_mode: str = "manual",
-                     resume_session: str | None = None) -> Chat:
+                     resume_session: str | None = None, model: str = "") -> Chat:
         path = Path(cwd).expanduser()
         if not path.is_dir():
             raise ValueError(f"{cwd} is not a directory on this machine")
         if permission_mode not in PERMISSION_MODES:
             raise ValueError(f"permission mode must be one of {PERMISSION_MODES}")
+        if model not in MODELS:
+            raise ValueError(f"model must be one of {MODELS}")
         chat = Chat(
             chat_id=uuid.uuid4().hex[:12],
             cwd=str(path),
             session_id=resume_session or str(uuid.uuid4()),
             permission_mode=permission_mode,
+            model=model,
         )
         # Resuming an existing conversation means the next launch must --resume.
         chat._started_once = bool(resume_session)
