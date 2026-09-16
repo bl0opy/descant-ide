@@ -2,8 +2,9 @@
 
     python3 -m descant.server        # or: uvicorn descant.server:app
 
-Serves the parsed transcript history, the context-cost analysis, and live
-``claude`` runs over WebSockets.  The Electron shell is a thin client over this.
+An editor's worth of filesystem, search and git, plus one optional Claude Code
+conversation per folder. The Electron shell is a thin client over this; nothing
+in the renderer knows how to touch a file or run a command by itself.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import asyncio
 import os
 import shlex
 import shutil
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,11 +20,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from . import chat, config, events, library, loadout, mcp, mining, proxy, skills
-from .inspector import analyze
-from .runner import MANAGER
-from .tailer import newest_transcript, tail_session
-from .transcript import Session, load_all, load_session
+from . import chat, config, git, search
+
 
 async def _exit_with_parent() -> None:
     """Follow the app down.
@@ -48,14 +45,13 @@ async def _exit_with_parent() -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """Live chats own subprocesses; a server exit must not orphan them."""
     watchdog = asyncio.create_task(_exit_with_parent())
     yield
     watchdog.cancel()
     await chat.REGISTRY.close_all()
 
 
-app = FastAPI(title="Descant", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="Descant", version="0.2.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # local-only desktop app; the Electron origin is file://
@@ -64,222 +60,19 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------------------------------
-# transcript cache
-# --------------------------------------------------------------------------
-
-
-class _Cache:
-    """Re-parse a transcript only when its file actually changed.
-
-    Keyed on (mtime, size) so a real ~/.claude/projects with thousands of files
-    stays responsive after the first load.
-    """
-
-    def __init__(self) -> None:
-        self._by_path: dict[str, tuple[tuple[float, int], Session]] = {}
-
-    def all(self) -> list[Session]:
-        sessions: list[Session] = []
-        seen: set[str] = set()
-        for root in config.projects_dirs():
-            if not root.exists():
-                continue
-            for project in sorted(p for p in root.iterdir() if p.is_dir()):
-                for jsonl in sorted(project.glob("*.jsonl")):
-                    if str(jsonl) in seen:
-                        continue
-                    seen.add(str(jsonl))
-                    try:
-                        st = jsonl.stat()
-                    except OSError:
-                        continue
-                    stamp = (st.st_mtime, st.st_size)
-                    hit = self._by_path.get(str(jsonl))
-                    if hit and hit[0] == stamp:
-                        sessions.append(hit[1])
-                        continue
-                    try:
-                        sess = load_session(jsonl, project.name)
-                    except OSError:
-                        continue
-                    self._by_path[str(jsonl)] = (stamp, sess)
-                    sessions.append(sess)
-        sessions.sort(key=lambda s: s.last_activity.timestamp() if s.last_activity else 0, reverse=True)
-        return sessions
-
-    def forget(self, path: str) -> None:
-        self._by_path.pop(path, None)
-
-    def one(self, session_id: str) -> Session | None:
-        for s in self.all():
-            if s.session_id == session_id or s.session_id.startswith(session_id):
-                return s
-        return None
-
-
-CACHE = _Cache()
-
-#: Probing MCP servers spawns processes, so per-repo attribution is memoised for
-#: the life of the server. Toggling a server clears it.
-_ATTRIBUTION_CACHE: dict[str, dict] = {}
-
-
-# --------------------------------------------------------------------------
-# read endpoints
-# --------------------------------------------------------------------------
-
-
 @app.get("/api/health")
 def health() -> dict:
-    roots = config.projects_dirs()
     return {
         "ok": True,
-        "projects_dir": str(roots[0]),
-        "projects_dirs": [str(r) for r in roots],
-        "live_projects_dir": str(config.live_projects_dir()),
-        "projects_dir_exists": any(r.exists() for r in roots),
-        "claude_bin": config.CLAUDE_BIN,
-        "live_runs": len(MANAGER.runs),
-    }
-
-
-async def _attribution_for(repo_path: str) -> dict:
-    """Measured MCP + skill cost for a repo, for the inspector's preamble split.
-
-    Cached per repo because probing MCP servers spawns processes; a session list
-    over twenty repos must not spawn twenty server handshakes on every refresh.
-    """
-    if repo_path in _ATTRIBUTION_CACHE:
-        return _ATTRIBUTION_CACHE[repo_path]
-    result = {"mcp_tokens": 0, "skill_tokens": 0, "source": "not measured"}
-    if Path(repo_path).is_dir():
-        try:
-            servers = await mcp.discover_and_probe(repo_path, do_probe=True)
-            found = skills.discover(repo_path)
-            result = {
-                "mcp_tokens": sum(s.token_cost for s in servers if s.enabled),
-                "skill_tokens": skills.listing_cost(found),
-                "source": "MCP probe + SKILL.md frontmatter",
-            }
-        except Exception:
-            pass
-    _ATTRIBUTION_CACHE[repo_path] = result
-    return result
-
-
-@app.get("/api/sessions")
-async def list_sessions() -> dict:
-    """Every historical session, grouped by repo, with its context breakdown."""
-    sessions = CACHE.all()
-    attributions = {}
-    for repo in {s.repo_path for s in sessions}:
-        attributions[repo] = await _attribution_for(repo)
-    reports = [analyze(s, attribution=attributions.get(s.repo_path)) for s in sessions]
-    repos: dict[str, dict] = {}
-    for r in reports:
-        s = r.session
-        bucket = repos.setdefault(
-            s.repo_path,
-            {
-                "repo_path": s.repo_path,
-                "repo_name": s.repo_name,
-                # Transcripts routinely refer to repos that are not on *this*
-                # machine (a fixture, or history synced from another laptop).
-                # The UI needs to know before offering to run a live session there.
-                "exists": Path(s.repo_path).is_dir(),
-                "sessions": [],
-                "total_tokens": 0,
-            },
-        )
-        bucket["sessions"].append(r.to_dict())
-        bucket["total_tokens"] += r.total_tokens
-
-    ordered = sorted(
-        repos.values(),
-        key=lambda b: b["sessions"][0]["last_activity"] or "",
-        reverse=True,
-    )
-    return {
-        "projects_dir": os.pathsep.join(str(r) for r in config.projects_dirs()),
-        "repos": ordered,
-        "session_count": len(reports),
-        "live": MANAGER.list(),
-    }
-
-
-@app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str) -> dict:
-    sess = CACHE.one(session_id)
-    if sess is None:
-        raise HTTPException(404, f"no session {session_id}")
-    report = analyze(sess, attribution=await _attribution_for(sess.repo_path))
-    return {
-        **report.to_dict(),
-        "events": [events.from_transcript_event(e) for e in sess.events],
-    }
-
-
-@app.get("/api/sessions/{session_id}/context")
-async def get_context(session_id: str) -> dict:
-    sess = CACHE.one(session_id)
-    if sess is None:
-        raise HTTPException(404, f"no session {session_id}")
-    return analyze(sess, attribution=await _attribution_for(sess.repo_path)).to_dict()
-
-
-@app.get("/api/files")
-def list_files(path: str, limit: int = 4000) -> dict:
-    """One directory, not the whole tree.
-
-    The explorer used to flatten every file under a repo into one list of
-    relative paths, which loses the structure people actually navigate by — and
-    hits a truncation limit on any real project. This lists a single level and
-    lets the UI expand what it needs, so a big repo costs nothing until you look
-    inside it.
-    """
-    root = Path(path).expanduser()
-    if not root.is_dir():
-        raise HTTPException(404, f"not a directory: {root}")
-
-    skip = {".git", "node_modules", "__pycache__", ".venv", "dist", "build", ".next"}
-    dirs, files = [], []
-    try:
-        entries = sorted(root.iterdir(), key=lambda p: p.name.lower())
-    except OSError as exc:
-        raise HTTPException(400, str(exc))
-
-    for entry in entries:
-        if entry.name in skip:
-            continue
-        try:
-            is_dir = entry.is_dir()
-        except OSError:
-            continue
-        if is_dir:
-            dirs.append({"path": str(entry), "name": entry.name, "dir": True})
-        else:
-            try:
-                size = entry.stat().st_size
-            except OSError:
-                continue
-            files.append(
-                {"path": str(entry), "name": entry.name, "dir": False, "size": size}
-            )
-        if len(dirs) + len(files) >= limit:
-            break
-
-    # Directories first, the convention every file tree uses.
-    return {
-        "root": str(root),
-        "parent": str(root.parent),
-        "entries": dirs + files,
-        "truncated": len(dirs) + len(files) >= limit,
+        "claude": shutil.which(config.CLAUDE_BIN) or "",
+        "git": shutil.which("git") or "",
+        "gh": shutil.which("gh") or "",
+        "ripgrep": search.RG or "",
     }
 
 
 # --------------------------------------------------------------------------
-# creating and deleting files
+# the filesystem
 # --------------------------------------------------------------------------
 
 
@@ -295,26 +88,74 @@ def _guard_path(target: str, root: str) -> Path:
     path = Path(target).expanduser()
     if not path.is_absolute():
         path = base / path
-    # Resolve the target the same way as the base, or a repo living under a
+    # Resolve the target the same way as the base, or a folder living under a
     # symlinked directory (/tmp and /var are symlinks on macOS) would fail the
     # containment check even though it is plainly inside. Resolving also means a
-    # symlink pointing out of the repo is caught rather than followed.
+    # symlink pointing out of the folder is caught rather than followed.
     resolved = path.resolve()
     if resolved != base and not resolved.is_relative_to(base):
         raise HTTPException(400, f"refusing to touch {resolved}: outside {base}")
     return resolved
 
 
-class CreateFileBody(BaseModel):
+@app.get("/api/files")
+def list_files(path: str, limit: int = 4000, hidden: bool = True) -> dict:
+    """One directory, not the whole tree.
+
+    Listing a single level and letting the UI expand what it needs means a big
+    repo costs nothing until you look inside it.
+    """
+    root = Path(path).expanduser()
+    if not root.is_dir():
+        raise HTTPException(404, f"not a directory: {root}")
+
+    dirs, files = [], []
+    try:
+        entries = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    except OSError as exc:
+        raise HTTPException(400, str(exc))
+
+    for entry in entries:
+        if entry.name in search.SKIP_DIRS:
+            continue
+        if not hidden and entry.name.startswith("."):
+            continue
+        try:
+            is_dir = entry.is_dir()
+        except OSError:
+            continue
+        if is_dir:
+            dirs.append({"path": str(entry), "name": entry.name, "dir": True})
+        else:
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                continue
+            files.append({"path": str(entry), "name": entry.name, "dir": False, "size": size})
+        if len(dirs) + len(files) >= limit:
+            break
+
+    # Directories first, the convention every file tree uses.
+    return {
+        "root": str(root),
+        "parent": str(root.parent),
+        "name": root.name,
+        "entries": dirs + files,
+        "truncated": len(dirs) + len(files) >= limit,
+        "git": git.is_repo(str(root)),
+    }
+
+
+class CreateBody(BaseModel):
     root: str
-    path: str          # relative to root, or absolute inside it
+    path: str  # relative to root, or absolute inside it
     directory: bool = False
     content: str = ""
 
 
 @app.post("/api/fs/create")
-def create_entry(body: CreateFileBody) -> dict:
-    """Create a file (any extension) or a folder."""
+def create_entry(body: CreateBody) -> dict:
+    """Create a file (any extension) or a folder, parents included."""
     target = _guard_path(body.path, body.root)
     if not target.name:
         raise HTTPException(400, "a name is required")
@@ -331,26 +172,82 @@ def create_entry(body: CreateFileBody) -> dict:
     return {"path": str(target), "name": target.name, "dir": body.directory}
 
 
-class DeleteFileBody(BaseModel):
+class RenameBody(BaseModel):
+    root: str
+    path: str
+    to: str  # a bare name, or a path relative to root
+
+
+@app.post("/api/fs/rename")
+def rename_entry(body: RenameBody) -> dict:
+    """Rename or move. A bare name stays put; a path with a slash moves."""
+    source = _guard_path(body.path, body.root)
+    if not source.exists():
+        raise HTTPException(404, f"{source} does not exist")
+    dest_raw = body.to if "/" in body.to else str(source.parent / body.to)
+    dest = _guard_path(dest_raw, body.root)
+    if dest == source:
+        return {"path": str(dest), "name": dest.name}
+    if dest.exists():
+        raise HTTPException(409, f"{dest.name} already exists")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(dest)
+    except OSError as exc:
+        raise HTTPException(400, f"could not rename: {exc}")
+    return {"path": str(dest), "name": dest.name, "from": str(source)}
+
+
+class DuplicateBody(BaseModel):
+    root: str
+    path: str
+
+
+@app.post("/api/fs/duplicate")
+def duplicate_entry(body: DuplicateBody) -> dict:
+    source = _guard_path(body.path, body.root)
+    if not source.exists():
+        raise HTTPException(404, f"{source} does not exist")
+    stem, suffix = (source.stem, source.suffix) if source.is_file() else (source.name, "")
+    for n in range(1, 100):
+        candidate = source.with_name(f"{stem} copy{'' if n == 1 else f' {n}'}{suffix}")
+        if not candidate.exists():
+            break
+    else:
+        raise HTTPException(409, "too many copies already")
+    try:
+        if source.is_dir():
+            shutil.copytree(source, candidate)
+        else:
+            shutil.copy2(source, candidate)
+    except OSError as exc:
+        raise HTTPException(400, f"could not duplicate: {exc}")
+    return {"path": str(candidate), "name": candidate.name, "dir": candidate.is_dir()}
+
+
+class DeleteBody(BaseModel):
     root: str
     path: str
     recursive: bool = False
 
 
 @app.post("/api/fs/delete")
-def delete_entry(body: DeleteFileBody) -> dict:
+def delete_entry(body: DeleteBody) -> dict:
     """Delete a file, or a folder you have confirmed you meant."""
     target = _guard_path(body.path, body.root)
     base = Path(body.root).expanduser().resolve()
     if target == base:
-        raise HTTPException(400, "refusing to delete the repo itself")
+        raise HTTPException(400, "refusing to delete the folder you have open")
     if not target.exists():
         raise HTTPException(404, f"{target} does not exist")
     try:
         if target.is_dir():
             if not body.recursive and any(target.iterdir()):
                 raise HTTPException(409, f"{target.name} is not empty")
-            shutil.rmtree(target) if body.recursive else target.rmdir()
+            if body.recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
         else:
             target.unlink()
     except HTTPException:
@@ -391,32 +288,31 @@ def read_file(path: str, max_bytes: int = 2_000_000) -> dict:
             binary = True
     return {
         "path": str(p),
+        "name": p.name,
         "text": text,
         "binary": binary,
         "size": size,
         "truncated": truncated,
+        "mtime": p.stat().st_mtime,
     }
 
 
-class WriteFileBody(BaseModel):
+class WriteBody(BaseModel):
     path: str
     text: str
     root: str = ""
 
 
 @app.put("/api/file")
-def write_file(body: WriteFileBody) -> dict:
+def write_file(body: WriteBody) -> dict:
     """Save the editor's contents.
 
     Written through a temp file in the same directory and moved into place, so
-    an interrupted save cannot leave a half-written source file behind. When a
-    repo root is given the path is guarded against it, the same as every other
-    write in this file.
+    an interrupted save cannot leave a half-written source file behind.
     """
     target = _guard_path(body.path, body.root) if body.root else Path(body.path).expanduser()
     if target.exists() and target.is_dir():
         raise HTTPException(400, f"{target} is a directory")
-
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(target.name + ".descant-tmp")
@@ -424,410 +320,282 @@ def write_file(body: WriteFileBody) -> dict:
         tmp.replace(target)
     except OSError as exc:
         raise HTTPException(400, f"could not save: {exc}")
-    return {"path": str(target), "size": target.stat().st_size}
+    st = target.stat()
+    return {"path": str(target), "size": st.st_size, "mtime": st.st_mtime}
 
 
 # --------------------------------------------------------------------------
-# live runs
+# search
 # --------------------------------------------------------------------------
 
 
-class StartRun(BaseModel):
-    prompt: str
-    cwd: str
-    resume: str | None = None
-    model: str | None = None
-    permission_mode: str = "default"
+@app.get("/api/search/files")
+def search_files(root: str, q: str = "", limit: int = 50) -> dict:
+    """The quick-open index, filtered and ranked server-side."""
+    paths = _file_index(root)
+    return {"root": root, "results": search.match_paths(paths, q, limit), "indexed": len(paths)}
 
 
-@app.get("/api/runs")
-def list_runs() -> dict:
-    return {"runs": MANAGER.list()}
+#: Listing a big tree costs real time, so hold it until the caller says stale.
+_INDEX: dict[str, list[str]] = {}
 
 
-@app.post("/api/runs")
-async def start_run(body: StartRun) -> dict:
-    try:
-        run = await MANAGER.start(
-            body.prompt,
-            body.cwd,
-            resume=body.resume,
-            model=body.model,
-            permission_mode=body.permission_mode,
-        )
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(400, str(exc))
-    return run.meta()
+def _file_index(root: str) -> list[str]:
+    key = str(Path(root).expanduser())
+    if key not in _INDEX:
+        _INDEX[key] = search.files(key)
+    return _INDEX[key]
 
 
-@app.get("/api/runs/{run_id}")
-def get_run(run_id: str) -> dict:
-    run = MANAGER.get(run_id)
-    if run is None:
-        raise HTTPException(404, f"no run {run_id}")
-    return {**run.meta(), "events": run.log}
+@app.post("/api/search/reindex")
+def reindex(body: dict) -> dict:
+    _INDEX.pop(str(Path(body.get("root", "")).expanduser()), None)
+    return {"ok": True}
 
 
-@app.post("/api/runs/{run_id}/stop")
-async def stop_run(run_id: str) -> dict:
-    return {"stopped": await MANAGER.stop(run_id)}
+@app.get("/api/search/text")
+def search_text(
+    root: str,
+    q: str,
+    regex: bool = False,
+    case: bool = False,
+    word: bool = False,
+    include: str = "",
+    limit: int = 2000,
+) -> dict:
+    return search.grep(
+        root,
+        q,
+        regex=regex,
+        case_sensitive=case,
+        whole_word=word,
+        include=include,
+        max_results=limit,
+    )
 
 
-@app.websocket("/ws/runs/{run_id}")
-async def ws_run(ws: WebSocket, run_id: str) -> None:
-    """Live stream for one run.  Replays the backlog, then follows."""
-    await ws.accept()
-    run = MANAGER.get(run_id)
-    if run is None:
-        await ws.send_json({"kind": "error", "text": f"no run {run_id}"})
-        await ws.close()
-        return
-
-    queue = run.subscribe()
-    try:
-        await ws.send_json({"kind": "meta", "run": run.meta()})
-        # Backlog first so a late attach still sees the whole conversation.
-        for ev in list(run.log):
-            await ws.send_json(ev)
-        while True:
-            try:
-                ev = await asyncio.wait_for(queue.get(), timeout=20.0)
-            except asyncio.TimeoutError:
-                await ws.send_json({"kind": "ping", "ts": 0})
-                continue
-            await ws.send_json(ev)
-            if ev.get("kind") == "status" and ev.get("subtype") == "closed":
-                await ws.send_json({"kind": "meta", "run": run.meta()})
-    except WebSocketDisconnect:
-        pass
-    except RuntimeError:
-        pass  # socket closed under us
-    finally:
-        run.unsubscribe(queue)
+class ReplaceBody(BaseModel):
+    root: str
+    paths: list[str] = []
+    query: str
+    replacement: str
+    regex: bool = False
+    case: bool = False
 
 
-@app.websocket("/ws/tail")
-async def ws_tail(
-    ws: WebSocket, cwd: str, session_id: str | None = None, from_start: bool = True
-) -> None:
-    """Follow a session running in the terminal by tailing its transcript.
-
-    This is how the agent panel watches live work now that Run launches an
-    interactive `claude` in the pty rather than a headless subprocess.
-    """
-    await ws.accept()
-    try:
-        await tail_session(ws, cwd, session_id=session_id, from_start=from_start)
-    except (WebSocketDisconnect, RuntimeError):
-        pass
-    except Exception as exc:  # never let one bad tail take the server down
+@app.post("/api/search/replace")
+def search_replace(body: ReplaceBody) -> dict:
+    changed = 0
+    touched = []
+    for rel in body.paths:
         try:
-            await ws.send_json(events.make("error", text=f"tail failed: {exc}"))
-        except RuntimeError:
-            pass
-
-
-@app.get("/api/transcripts/latest")
-def latest_transcript(cwd: str) -> dict:
-    """Newest transcript for a repo — used to jump to a just-started session."""
-    p = newest_transcript(cwd)
-    return {"cwd": cwd, "session_id": p.stem if p else None, "path": str(p) if p else None}
-
-
-@app.websocket("/ws/replay/{session_id}")
-async def ws_replay(ws: WebSocket, session_id: str, delay: float = 0.0) -> None:
-    """Replay a historical transcript over the same wire format as a live run.
-
-    Useful for demoing the agent panel without burning tokens; `delay` paces it.
-    """
-    await ws.accept()
-    sess = CACHE.one(session_id)
-    if sess is None:
-        await ws.send_json({"kind": "error", "text": f"no session {session_id}"})
-        await ws.close()
-        return
-    try:
-        await ws.send_json(
-            {"kind": "meta", "run": {**sess.meta_dict(), "status": "idle", "live": False}}
-        )
-        for ev in sess.events:
-            await ws.send_json(events.from_transcript_event(ev))
-            if delay:
-                await asyncio.sleep(delay)
-        await ws.send_json(events.make("status", subtype="closed", text="replay complete"))
-    except (WebSocketDisconnect, RuntimeError):
-        pass
+            n = search.replace_in_file(
+                body.root,
+                rel,
+                body.query,
+                body.replacement,
+                regex=body.regex,
+                case_sensitive=body.case,
+            )
+        except (ValueError, OSError, UnicodeDecodeError) as exc:
+            raise HTTPException(400, f"{rel}: {exc}")
+        if n:
+            changed += n
+            touched.append(rel)
+    return {"replaced": changed, "files": touched}
 
 
 # --------------------------------------------------------------------------
-# loadout, conversion, mining, library
+# git
 # --------------------------------------------------------------------------
 
 
-@app.get("/api/loadout")
-async def get_loadout(repo: str, probe: bool = True) -> dict:
-    """What is attached to a repo and what each item costs."""
+def _git(fn, *args, **kwargs):
     try:
-        return await loadout.get(repo, probe=probe)
-    except OSError as exc:
+        return fn(*args, **kwargs)
+    except git.GitError as exc:
         raise HTTPException(400, str(exc))
 
 
-class ToggleBody(BaseModel):
+@app.get("/api/git/status")
+def git_status(repo: str) -> dict:
+    if not git.is_repo(repo):
+        return {"repo": repo, "is_repo": False, "files": [], "staged": [], "changes": []}
+    return {**_git(git.status, repo), "is_repo": True}
+
+
+@app.get("/api/git/diff")
+def git_diff(repo: str, path: str, staged: bool = False) -> dict:
+    return _git(git.diff_sides, repo, path, staged)
+
+
+@app.get("/api/git/log")
+def git_log(repo: str, limit: int = 40) -> dict:
+    return _git(git.log, repo, limit)
+
+
+@app.get("/api/git/branches")
+def git_branches(repo: str) -> dict:
+    return _git(git.branches, repo)
+
+
+@app.get("/api/git/github")
+def git_github(repo: str) -> dict:
+    return git.gh_overview(repo)
+
+
+class RepoPaths(BaseModel):
+    repo: str
+    paths: list[str] = []
+
+
+@app.post("/api/git/stage")
+def git_stage(body: RepoPaths) -> dict:
+    return _git(git.stage, body.repo, body.paths)
+
+
+@app.post("/api/git/unstage")
+def git_unstage(body: RepoPaths) -> dict:
+    return _git(git.unstage, body.repo, body.paths)
+
+
+@app.post("/api/git/discard")
+def git_discard(body: RepoPaths) -> dict:
+    if not body.paths:
+        raise HTTPException(400, "name the paths to discard")
+    return _git(git.discard, body.repo, body.paths)
+
+
+class CommitBody(BaseModel):
+    repo: str
+    message: str
+    amend: bool = False
+    stage_all: bool = False
+
+
+@app.post("/api/git/commit")
+def git_commit(body: CommitBody) -> dict:
+    return _git(git.commit, body.repo, body.message, body.amend, body.stage_all)
+
+
+class RepoBody(BaseModel):
+    repo: str
+
+
+@app.post("/api/git/push")
+def git_push(body: RepoBody) -> dict:
+    return _git(git.push, body.repo)
+
+
+@app.post("/api/git/pull")
+def git_pull(body: RepoBody) -> dict:
+    return _git(git.pull, body.repo)
+
+
+@app.post("/api/git/fetch")
+def git_fetch(body: RepoBody) -> dict:
+    return _git(git.fetch, body.repo)
+
+
+@app.post("/api/git/init")
+def git_init(body: RepoBody) -> dict:
+    return _git(git.init, body.repo)
+
+
+class CheckoutBody(BaseModel):
     repo: str
     name: str
-    enabled: bool
+    create: bool = False
 
 
-@app.post("/api/loadout/mcp")
-def toggle_mcp(body: ToggleBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    return loadout.set_mcp_enabled(body.repo, body.name, body.enabled)
+@app.post("/api/git/checkout")
+def git_checkout(body: CheckoutBody) -> dict:
+    return _git(git.checkout, body.repo, body.name, body.create)
 
 
-@app.post("/api/loadout/skill")
-def toggle_skill(body: ToggleBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    return loadout.set_skill_enabled(body.repo, body.name, body.enabled)
+# --------------------------------------------------------------------------
+# running the open file
+# --------------------------------------------------------------------------
+
+#: extension -> argv prefix. The value is a list so nothing depends on shell
+#: word-splitting; the file path is appended and quoted by the caller.
+_RUNNERS = {
+    ".py": ["python3"],
+    ".js": ["node"],
+    ".mjs": ["node"],
+    ".cjs": ["node"],
+    ".ts": ["npx", "tsx"],
+    ".sh": ["bash"],
+    ".bash": ["bash"],
+    ".zsh": ["zsh"],
+    ".rb": ["ruby"],
+    ".php": ["php"],
+    ".lua": ["lua"],
+    ".pl": ["perl"],
+    ".go": ["go", "run"],
+    ".java": ["java"],
+    ".swift": ["swift"],
+    ".r": ["Rscript"],
+    ".jl": ["julia"],
+}
 
 
-class ConvertBody(BaseModel):
-    repo: str
-    name: str
-    disable_after: bool = True
+@app.get("/api/runner")
+def runner_for(path: str, repo: str = "") -> dict:
+    """How would you run this file?
 
+    Detection rather than a fixed table where it matters: a folder with a
+    ``.venv`` means ``python3`` is the wrong python, and a Rust file belongs to
+    its crate rather than to itself. Returning the command (instead of running
+    it) keeps the decision visible — the UI types it into the terminal, where
+    you can see and edit it before it goes.
+    """
+    target = Path(path).expanduser()
+    if not target.is_file():
+        raise HTTPException(404, f"not a file: {target}")
 
-@app.post("/api/mcp/preview")
-async def preview_conversion(body: ConvertBody) -> dict:
-    """Show the generated skill and its saving before writing anything."""
-    servers = await mcp.discover_and_probe(body.repo, do_probe=True)
-    server = next((s for s in servers if s.name == body.name), None)
-    if server is None:
-        raise HTTPException(404, f"no MCP server named {body.name!r}")
+    root = Path(repo).expanduser() if repo else target.parent
+    suffix = target.suffix.lower()
+
+    # A crate is built, not interpreted; the same is true of a Go module.
+    for parent in [target.parent, *target.parents]:
+        if not str(parent).startswith(str(root)):
+            break
+        if suffix == ".rs" and (parent / "Cargo.toml").is_file():
+            return {"command": "cargo run", "cwd": str(parent), "kind": "cargo"}
+
+    if suffix == ".rs":
+        return {
+            "command": f"rustc {shlex.quote(str(target))} -o /tmp/descant-run && /tmp/descant-run",
+            "cwd": str(root),
+            "kind": "rustc",
+        }
+
+    argv = _RUNNERS.get(suffix)
+    if not argv:
+        return {
+            "command": "",
+            "cwd": str(root),
+            "kind": "none",
+            "reason": f"no runner for {suffix or 'this file type'}",
+        }
+
+    # Prefer the folder's own interpreter over whatever is on PATH.
+    if argv[0] == "python3":
+        for candidate in (root / ".venv" / "bin" / "python3", root / "venv" / "bin" / "python3"):
+            if candidate.is_file():
+                argv = [str(candidate)]
+                break
+
     return {
-        "server": server.to_dict(),
-        "skill": mcp.render_skill(server),
-        **mcp.conversion_savings(server),
+        "command": " ".join([*argv, shlex.quote(str(target))]),
+        "cwd": str(root),
+        "kind": argv[0],
     }
 
 
-@app.post("/api/mcp/convert")
-async def convert(body: ConvertBody) -> dict:
-    try:
-        return await loadout.convert_mcp_to_skill(
-            body.repo, body.name, disable_after=body.disable_after
-        )
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-class SaveMcpBody(BaseModel):
-    repo: str
-    name: str
-    config: dict
-    scope: str = "local"
-
-
-@app.post("/api/loadout/mcp/test")
-async def test_mcp(body: SaveMcpBody) -> dict:
-    """Probe a candidate server without saving it, so its cost is known first."""
-    try:
-        return await mcp.probe_config(body.name, body.config, body.repo)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.post("/api/loadout/mcp/save")
-def save_mcp(body: SaveMcpBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    try:
-        return mcp.save_server(body.repo, body.name, body.config, scope=body.scope)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-class DeleteMcpBody(BaseModel):
-    repo: str
-    name: str
-
-
-@app.post("/api/loadout/mcp/delete")
-def delete_mcp(body: DeleteMcpBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    try:
-        return mcp.delete_server(body.repo, body.name)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.get("/api/mining")
-def get_mining(repo: str | None = None, limit: int = 20) -> dict:
-    """Repeated tool sequences worth turning into skills."""
-    return mining.summary(CACHE.all(), repo_path=repo, limit=limit)
-
-
-class AcceptBody(BaseModel):
-    repo: str
-    slug: str
-    skill_md: str
-    scope: str = "repo"
-    overwrite: bool = False
-
-
-@app.post("/api/mining/accept")
-def accept_mined(body: AcceptBody) -> dict:
-    try:
-        return loadout.write_mined_skill(
-            body.repo, body.slug, body.skill_md, scope=body.scope, overwrite=body.overwrite
-        )
-    except FileExistsError as exc:
-        raise HTTPException(409, str(exc))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-class CopySkillBody(BaseModel):
-    source_path: str
-    scope: str = "user"
-    repo: str | None = None
-    slug: str | None = None
-    overwrite: bool = False
-
-
-@app.post("/api/skills/copy")
-def copy_skill(body: CopySkillBody) -> dict:
-    """Share a skill: promote it to every repo, or hand it to one other repo."""
-    try:
-        return loadout.copy_skill(
-            body.source_path,
-            body.scope,
-            repo_path=body.repo,
-            slug=body.slug,
-            overwrite=body.overwrite,
-        )
-    except FileExistsError as exc:
-        raise HTTPException(409, str(exc))
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-@app.get("/api/repos")
-def list_repos() -> dict:
-    """Repos Descant knows about — the targets a skill can be copied into."""
-    seen: dict[str, dict] = {}
-    for sess in CACHE.all():
-        if not sess.repo_path or sess.repo_path in seen:
-            continue
-        seen[sess.repo_path] = {
-            "path": sess.repo_path,
-            "name": Path(sess.repo_path).name,
-            "exists": Path(sess.repo_path).is_dir(),
-        }
-    return {"repos": sorted(seen.values(), key=lambda r: r["name"].lower())}
-
-
-@app.get("/api/library")
-async def get_library(q: str = "", limit: int = 20, probe: bool = True) -> dict:
-    """Search every skill and MCP tool across all known repos."""
-    repos = sorted({s.repo_path for s in CACHE.all() if Path(s.repo_path).is_dir()})
-    lib = await library.build(repos, probe_mcp=probe)
-    entries = (
-        lib.score_query(q, limit=limit) if q else [e.to_dict() for e in lib.entries][:limit]
-    )
-    return {"query": q, "repos": repos, "stats": library.stats(lib), "results": entries}
-
-
 # --------------------------------------------------------------------------
-# the MCP proxy: one server fronting the rest, with a resident group
-# --------------------------------------------------------------------------
-
-
-@app.get("/api/proxy")
-def get_proxy(repo: str) -> dict:
-    """Groups, savings and the cached tool index. Never probes — this is a read."""
-    return proxy.status(repo)
-
-
-class ProxyRepoBody(BaseModel):
-    repo: str
-
-
-@app.post("/api/proxy/refresh")
-async def refresh_proxy_index(body: ProxyRepoBody) -> dict:
-    """Re-probe every server so tools outside the group stay findable."""
-    stats = await proxy.refresh_index(body.repo)
-    return {**stats, **proxy.status(body.repo)}
-
-
-class InstallProxyBody(BaseModel):
-    repo: str
-    group: str | None = None
-    budget_tokens: int = 1200
-
-
-@app.post("/api/proxy/install")
-async def install_proxy(body: InstallProxyBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    try:
-        return await proxy.install(body.repo, group=body.group,
-                                   budget_tokens=body.budget_tokens)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-class UninstallProxyBody(BaseModel):
-    repo: str
-    reattach: bool = True
-
-
-@app.post("/api/proxy/uninstall")
-def uninstall_proxy(body: UninstallProxyBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    return proxy.uninstall(body.repo, reattach=body.reattach)
-
-
-class GroupBody(BaseModel):
-    repo: str
-    name: str
-    tools: dict = {}
-    description: str = ""
-    activate: bool = True
-
-
-@app.post("/api/proxy/group")
-def save_group(body: GroupBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    try:
-        return proxy.set_group(body.repo, body.name, body.tools,
-                               description=body.description, activate=body.activate)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-
-
-class GroupNameBody(BaseModel):
-    repo: str
-    name: str
-
-
-@app.post("/api/proxy/activate")
-def activate_group(body: GroupNameBody) -> dict:
-    _ATTRIBUTION_CACHE.pop(body.repo, None)
-    try:
-        return proxy.activate_group(body.repo, body.name)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc))
-
-
-@app.post("/api/proxy/group/delete")
-def delete_group(body: GroupNameBody) -> dict:
-    try:
-        return proxy.delete_group(body.repo, body.name)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc))
-
-
-# --------------------------------------------------------------------------
-# chat: a two-way conversation, in the app rather than in the terminal
+# chat: one optional conversation per open folder
 # --------------------------------------------------------------------------
 
 
@@ -941,148 +709,10 @@ async def ws_chat(ws: WebSocket, chat_id: str) -> None:
                 await ws.send_json({"kind": "ping"})
                 continue
             await ws.send_json(payload)
-    except WebSocketDisconnect:
-        pass
-    except RuntimeError:
+    except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         c.unsubscribe(queue)
-
-
-
-
-# --------------------------------------------------------------------------
-# managing the session list
-# --------------------------------------------------------------------------
-
-
-class NewSessionBody(BaseModel):
-    repo: str
-
-
-@app.post("/api/sessions/new")
-async def new_session(body: NewSessionBody) -> dict:
-    """Start a fresh conversation for a repo.
-
-    A session is a chat: Claude Code writes the transcript once the first turn
-    lands, so what this really creates is somewhere to type. It shows up in the
-    sidebar as soon as it has said anything.
-    """
-    try:
-        c = await chat.REGISTRY.create(body.repo)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    return c.meta()
-
-
-@app.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str) -> dict:
-    """Delete a session's transcript.
-
-    This removes the file Claude Code wrote, which is the only record of the
-    conversation — there is no undo, so the UI asks first. We refuse anything
-    that is not a ``.jsonl`` under a configured projects directory, so a bad id
-    can never turn into an arbitrary unlink.
-    """
-    sess = CACHE.one(session_id)
-    if sess is None:
-        raise HTTPException(404, f"no session {session_id}")
-
-    path = Path(sess.path).resolve()
-    roots = [r.resolve() for r in config.projects_dirs()]
-    if path.suffix != ".jsonl" or not any(path.is_relative_to(root) for root in roots):
-        raise HTTPException(400, f"refusing to delete {path}: not a transcript we manage")
-
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise HTTPException(400, f"could not delete: {exc}")
-
-    CACHE.forget(str(path))
-    return {"deleted": sess.session_id, "path": str(path), "title": sess.title}
-
-
-# --------------------------------------------------------------------------
-# running the open file
-# --------------------------------------------------------------------------
-
-#: extension -> argv prefix. The value is a list so nothing depends on shell
-#: word-splitting; the file path is appended and quoted by the caller.
-_RUNNERS = {
-    ".py": ["python3"],
-    ".js": ["node"],
-    ".mjs": ["node"],
-    ".cjs": ["node"],
-    ".ts": ["npx", "tsx"],
-    ".sh": ["bash"],
-    ".bash": ["bash"],
-    ".zsh": ["zsh"],
-    ".rb": ["ruby"],
-    ".php": ["php"],
-    ".lua": ["lua"],
-    ".pl": ["perl"],
-    ".go": ["go", "run"],
-    ".java": ["java"],
-    ".swift": ["swift"],
-    ".r": ["Rscript"],
-    ".jl": ["julia"],
-}
-
-
-@app.get("/api/runner")
-def runner_for(path: str, repo: str = "") -> dict:
-    """How would you run this file?
-
-    Detection rather than a fixed table where it matters: a repo with a
-    ``.venv`` means ``python3`` is the wrong python, and a Rust file belongs to
-    its crate rather than to itself. Returning the command (instead of running
-    it) keeps the decision visible — the UI types it into the terminal, where
-    you can see and edit it before it goes.
-    """
-    target = Path(path).expanduser()
-    if not target.is_file():
-        raise HTTPException(404, f"not a file: {target}")
-
-    root = Path(repo).expanduser() if repo else target.parent
-    suffix = target.suffix.lower()
-
-    # A crate is built, not interpreted; the same is true of a Go module.
-    for parent in [target.parent, *target.parents]:
-        if not str(parent).startswith(str(root)):
-            break
-        if suffix == ".rs" and (parent / "Cargo.toml").is_file():
-            return {"command": "cargo run", "cwd": str(parent), "kind": "cargo"}
-
-    if suffix == ".rs":
-        return {
-            "command": f"rustc {shlex.quote(str(target))} -o /tmp/descant-run && /tmp/descant-run",
-            "cwd": str(root),
-            "kind": "rustc",
-        }
-
-    argv = _RUNNERS.get(suffix)
-    if not argv:
-        return {
-            "command": "",
-            "cwd": str(root),
-            "kind": "none",
-            "reason": f"no runner for {suffix or 'this file type'}",
-        }
-
-    # Prefer the repo's own interpreter over whatever is on PATH.
-    if argv[0] == "python3":
-        for candidate in (root / ".venv" / "bin" / "python3", root / "venv" / "bin" / "python3"):
-            if candidate.is_file():
-                argv = [str(candidate)]
-                break
-
-    return {
-        "command": " ".join([*argv, shlex.quote(str(target))]),
-        "cwd": str(root),
-        "kind": argv[0],
-    }
 
 
 def main() -> None:
